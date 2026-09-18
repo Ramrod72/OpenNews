@@ -1,4 +1,4 @@
-// OpenNews database schema
+// Veriqen database schema
 //
 // Default datasource is SQLite for zero-config local/self-hosted use.
 // To run on PostgreSQL for production: change `provider` below to

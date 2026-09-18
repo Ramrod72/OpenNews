@@ -14,7 +14,7 @@ export async function Header() {
       <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
         <Link href="/" className="flex items-center gap-1.5 text-lg font-extrabold tracking-tight">
           <Newspaper size={20} className="text-accent" aria-hidden />
-          OpenNews
+          Veriqen
         </Link>
 
         <Suspense fallback={<div className="hidden flex-1 md:block" />}>

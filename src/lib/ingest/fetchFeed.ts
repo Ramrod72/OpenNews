@@ -5,7 +5,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 const MAX_FEED_BYTES = 5 * 1024 * 1024; // 5MB — generous for any legitimate RSS/Atom feed
 const USER_AGENT =
   process.env.INGEST_USER_AGENT ??
-  "OpenNewsBot/1.0 (+https://github.com/opennews/opennews; self-hosted news aggregator)";
+  "VeriqenBot/1.0 (+https://github.com/veriqen/veriqen; self-hosted news aggregator)";
 
 type FeedItem = Parser.Item & {
   "content:encoded"?: string;

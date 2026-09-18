@@ -17,9 +17,8 @@ export default async function SourcesPage() {
     <div>
       <h1 className="mb-2 text-2xl font-extrabold tracking-tight">Sources</h1>
       <p className="mb-8 max-w-2xl text-sm text-foreground-muted">
-        OpenNews aggregates headlines from the publicly published RSS/Atom feeds below. It links
-        back to each original article and never republishes full article content. See the
-        project&apos;s{" "}
+        Veriqen aggregates headlines from the publicly published RSS/Atom feeds below. It links back
+        to each original article and never republishes full article content. See the project&apos;s{" "}
         <code className="rounded bg-surface-muted px-1 py-0.5 text-xs">config/sources.json</code> to
         add or remove feeds on a self-hosted instance.
       </p>

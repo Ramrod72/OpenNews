@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea for OpenNews
+about: Suggest an idea for Veriqen
 title: "[Feature] "
 labels: enhancement
 ---

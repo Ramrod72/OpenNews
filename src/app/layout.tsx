@@ -19,8 +19,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "OpenNews — Open-source news aggregator",
-    template: "%s · OpenNews",
+    default: "Veriqen — Open-source news aggregator",
+    template: "%s · Veriqen",
   },
   description:
     "An open-source news aggregator that clusters public RSS coverage into stories, timelines, and source comparisons.",

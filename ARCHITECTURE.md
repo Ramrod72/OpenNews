@@ -2,7 +2,7 @@
 
 ## Overview
 
-OpenNews is a single Next.js (App Router) application plus one extra
+Veriqen is a single Next.js (App Router) application plus one extra
 long-running Node process (the **worker**). They share one Prisma-managed
 database.
 
