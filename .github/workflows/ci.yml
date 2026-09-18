@@ -36,6 +36,11 @@ jobs:
         env:
           DATABASE_URL: "file:./test/.tmp-test.db"
 
+      - name: Apply migrations (build-time DB — several pages query it during static generation)
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: "file:./ci-placeholder.db"
+
       - name: Build
         run: npm run build
         env:

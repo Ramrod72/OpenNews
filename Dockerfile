@@ -15,10 +15,13 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends openssl ca-
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# A DATABASE_URL is required for `prisma generate`/build-time checks but no
-# database connection is actually made at build time.
+# A DATABASE_URL is required for `prisma generate` and for `next build`,
+# which statically prerenders pages (e.g. every page renders the shared
+# Header, which queries categories) and so needs a real, migrated — if
+# empty — database at build time, not just a valid connection string.
 ENV DATABASE_URL="file:./build-placeholder.db"
 RUN npx prisma generate
+RUN npx prisma migrate deploy
 RUN npm run build
 
 # ---- runner: production image. Serves the web app; the worker service   ----
