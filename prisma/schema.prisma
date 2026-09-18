@@ -1,0 +1,173 @@
+// OpenNews database schema
+//
+// Default datasource is SQLite for zero-config local/self-hosted use.
+// To run on PostgreSQL for production: change `provider` below to
+// "postgresql" and point DATABASE_URL at your Postgres instance, then
+// run `npx prisma migrate deploy`. The schema intentionally avoids
+// SQLite-only types so it works unchanged on both. See DEPLOYMENT.md.
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// A configured news feed (RSS/Atom) that the ingestion worker polls.
+model Source {
+  id                   String    @id @default(cuid())
+  name                 String
+  /// Feed URL (RSS/Atom endpoint)
+  url                  String    @unique
+  /// Public homepage of the publisher, used for attribution links
+  homepageUrl          String?
+  /// Default category slug applied to articles from this source
+  categorySlug         String
+  logoUrl              String?
+  active               Boolean   @default(true)
+  fetchIntervalMinutes Int       @default(30)
+  lastFetchedAt        DateTime?
+  lastSuccessAt        DateTime?
+  lastErrorAt          DateTime?
+  lastError            String?
+  consecutiveFailures  Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  articles  Article[]
+  fetchLogs FeedFetchLog[]
+
+  @@index([active])
+}
+
+/// A news topic/section (World, Business, Technology, ...)
+model Category {
+  id    String @id @default(cuid())
+  slug  String @unique
+  name  String
+  order Int    @default(0)
+
+  articles Article[]
+  clusters StoryCluster[]
+}
+
+/// A single article/item pulled from a source feed.
+model Article {
+  id              String   @id @default(cuid())
+  sourceId        String
+  source          Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  url             String   @unique
+  /// SHA-256 of the normalized URL, used for fast dedupe lookups
+  urlHash         String   @unique
+  title           String
+  /// Lowercased, punctuation-stripped title used for similarity comparisons
+  titleNormalized String
+  /// Short excerpt/description as provided by the feed (sanitized, plain text)
+  excerpt         String?
+  imageUrl        String?
+  author          String?
+  categoryId      String?
+  category        Category? @relation(fields: [categoryId], references: [id])
+  publishedAt     DateTime
+  fetchedAt       DateTime @default(now())
+  guid            String?
+
+  clusterId String?
+  cluster   StoryCluster? @relation(fields: [clusterId], references: [id])
+
+  keywords ArticleKeyword[]
+
+  createdAt DateTime @default(now())
+
+  @@index([publishedAt])
+  @@index([clusterId])
+  @@index([categoryId])
+  @@index([titleNormalized])
+}
+
+/// A group of articles from different sources believed to cover the same
+/// underlying event ("story"). Produced by the clustering engine.
+model StoryCluster {
+  id            String    @id @default(cuid())
+  /// Representative headline shown on cards (from the earliest article)
+  headline      String
+  slug          String    @unique
+  /// Auto-generated extractive (or optional AI) summary. Never fabricated.
+  summary       String?
+  categoryId    String?
+  category      Category? @relation(fields: [categoryId], references: [id])
+  sourceCount   Int       @default(0)
+  articleCount  Int       @default(0)
+  firstSeenAt   DateTime
+  lastUpdatedAt DateTime
+  breaking      Boolean   @default(false)
+  breakingScore Float     @default(0)
+  imageUrl      String?
+
+  articles Article[]
+  keywords ClusterKeyword[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([lastUpdatedAt])
+  @@index([breaking])
+  @@index([categoryId])
+}
+
+/// A topic/entity keyword extracted from articles, used for search & clustering.
+model Keyword {
+  id   String @id @default(cuid())
+  term String @unique
+
+  articles ArticleKeyword[]
+  clusters ClusterKeyword[]
+}
+
+model ArticleKeyword {
+  articleId String
+  keywordId String
+  weight    Float @default(1)
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  keyword Keyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@id([articleId, keywordId])
+}
+
+model ClusterKeyword {
+  clusterId String
+  keywordId String
+  weight    Float @default(1)
+
+  cluster StoryCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  keyword Keyword      @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@id([clusterId, keywordId])
+}
+
+/// Health/audit log for each feed fetch attempt (for admin diagnostics).
+model FeedFetchLog {
+  id           String    @id @default(cuid())
+  sourceId     String
+  source       Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  success      Boolean
+  itemsFound   Int       @default(0)
+  itemsNew     Int       @default(0)
+  errorMessage String?
+
+  @@index([sourceId, startedAt])
+}
+
+/// Runtime-configurable application settings (ad slots, AI provider, etc.)
+/// managed from the admin panel and persisted so they survive restarts.
+model AdminSetting {
+  key       String   @id
+  /// JSON-encoded value
+  value     String
+  updatedAt DateTime @updatedAt
+}

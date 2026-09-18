@@ -1,0 +1,200 @@
+[
+  {
+    "name": "BBC News – World",
+    "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/world",
+    "categorySlug": "world"
+  },
+  {
+    "name": "The Guardian – World",
+    "url": "https://www.theguardian.com/world/rss",
+    "homepageUrl": "https://www.theguardian.com/world",
+    "categorySlug": "world"
+  },
+  {
+    "name": "Al Jazeera English",
+    "url": "https://www.aljazeera.com/xml/rss/all.xml",
+    "homepageUrl": "https://www.aljazeera.com",
+    "categorySlug": "world"
+  },
+  {
+    "name": "UN News",
+    "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+    "homepageUrl": "https://news.un.org/en/",
+    "categorySlug": "world"
+  },
+  {
+    "name": "BBC News – US & Canada",
+    "url": "http://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/us-canada",
+    "categorySlug": "us"
+  },
+  {
+    "name": "The Guardian – US News",
+    "url": "https://www.theguardian.com/us-news/rss",
+    "homepageUrl": "https://www.theguardian.com/us-news",
+    "categorySlug": "us"
+  },
+  {
+    "name": "NPR – News",
+    "url": "https://feeds.npr.org/1001/rss.xml",
+    "homepageUrl": "https://www.npr.org/sections/news/",
+    "categorySlug": "us"
+  },
+  {
+    "name": "BBC News – Politics",
+    "url": "http://feeds.bbci.co.uk/news/politics/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/politics",
+    "categorySlug": "politics"
+  },
+  {
+    "name": "The Guardian – Politics",
+    "url": "https://www.theguardian.com/politics/rss",
+    "homepageUrl": "https://www.theguardian.com/politics",
+    "categorySlug": "politics"
+  },
+  {
+    "name": "Politico",
+    "url": "https://www.politico.com/rss/politics08.xml",
+    "homepageUrl": "https://www.politico.com",
+    "categorySlug": "politics"
+  },
+  {
+    "name": "The Hill",
+    "url": "https://thehill.com/homenews/feed/",
+    "homepageUrl": "https://thehill.com",
+    "categorySlug": "politics"
+  },
+  {
+    "name": "BBC News – Business",
+    "url": "http://feeds.bbci.co.uk/news/business/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/business",
+    "categorySlug": "business"
+  },
+  {
+    "name": "The Guardian – Business",
+    "url": "https://www.theguardian.com/business/rss",
+    "homepageUrl": "https://www.theguardian.com/business",
+    "categorySlug": "business"
+  },
+  {
+    "name": "CNBC – Top News",
+    "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "homepageUrl": "https://www.cnbc.com",
+    "categorySlug": "business"
+  },
+  {
+    "name": "BBC News – Technology",
+    "url": "http://feeds.bbci.co.uk/news/technology/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/technology",
+    "categorySlug": "technology"
+  },
+  {
+    "name": "The Guardian – Technology",
+    "url": "https://www.theguardian.com/technology/rss",
+    "homepageUrl": "https://www.theguardian.com/technology",
+    "categorySlug": "technology"
+  },
+  {
+    "name": "TechCrunch",
+    "url": "https://techcrunch.com/feed/",
+    "homepageUrl": "https://techcrunch.com",
+    "categorySlug": "technology"
+  },
+  {
+    "name": "The Verge",
+    "url": "https://www.theverge.com/rss/index.xml",
+    "homepageUrl": "https://www.theverge.com",
+    "categorySlug": "technology"
+  },
+  {
+    "name": "Ars Technica",
+    "url": "https://feeds.arstechnica.com/arstechnica/index",
+    "homepageUrl": "https://arstechnica.com",
+    "categorySlug": "technology"
+  },
+  {
+    "name": "BBC News – Science & Environment",
+    "url": "http://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/science_and_environment",
+    "categorySlug": "science"
+  },
+  {
+    "name": "The Guardian – Science",
+    "url": "https://www.theguardian.com/science/rss",
+    "homepageUrl": "https://www.theguardian.com/science",
+    "categorySlug": "science"
+  },
+  {
+    "name": "ScienceDaily",
+    "url": "https://www.sciencedaily.com/rss/all.xml",
+    "homepageUrl": "https://www.sciencedaily.com",
+    "categorySlug": "science"
+  },
+  {
+    "name": "Phys.org",
+    "url": "https://phys.org/rss-feed/",
+    "homepageUrl": "https://phys.org",
+    "categorySlug": "science"
+  },
+  {
+    "name": "USGS – Significant Earthquakes (Past Week)",
+    "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_week.atom",
+    "homepageUrl": "https://earthquake.usgs.gov/earthquakes/map/",
+    "categorySlug": "science"
+  },
+  {
+    "name": "BBC News – Health",
+    "url": "http://feeds.bbci.co.uk/news/health/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/health",
+    "categorySlug": "health"
+  },
+  {
+    "name": "The Guardian – Health",
+    "url": "https://www.theguardian.com/society/health/rss",
+    "homepageUrl": "https://www.theguardian.com/society/health",
+    "categorySlug": "health"
+  },
+  {
+    "name": "STAT News",
+    "url": "https://www.statnews.com/feed/",
+    "homepageUrl": "https://www.statnews.com",
+    "categorySlug": "health"
+  },
+  {
+    "name": "BBC Sport",
+    "url": "http://feeds.bbci.co.uk/sport/rss.xml",
+    "homepageUrl": "https://www.bbc.com/sport",
+    "categorySlug": "sports"
+  },
+  {
+    "name": "The Guardian – Sport",
+    "url": "https://www.theguardian.com/sport/rss",
+    "homepageUrl": "https://www.theguardian.com/sport",
+    "categorySlug": "sports"
+  },
+  {
+    "name": "ESPN – Top Headlines",
+    "url": "https://www.espn.com/espn/rss/news",
+    "homepageUrl": "https://www.espn.com",
+    "categorySlug": "sports"
+  },
+  {
+    "name": "BBC News – Entertainment & Arts",
+    "url": "http://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+    "homepageUrl": "https://www.bbc.com/news/entertainment_and_arts",
+    "categorySlug": "entertainment"
+  },
+  {
+    "name": "The Guardian – Culture",
+    "url": "https://www.theguardian.com/culture/rss",
+    "homepageUrl": "https://www.theguardian.com/culture",
+    "categorySlug": "entertainment"
+  },
+  {
+    "name": "Variety",
+    "url": "https://variety.com/feed/",
+    "homepageUrl": "https://variety.com",
+    "categorySlug": "entertainment"
+  }
+]

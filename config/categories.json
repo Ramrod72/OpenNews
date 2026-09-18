@@ -1,0 +1,11 @@
+[
+  { "slug": "world", "name": "World", "order": 1 },
+  { "slug": "us", "name": "United States", "order": 2 },
+  { "slug": "politics", "name": "Politics", "order": 3 },
+  { "slug": "business", "name": "Business", "order": 4 },
+  { "slug": "technology", "name": "Technology", "order": 5 },
+  { "slug": "science", "name": "Science", "order": 6 },
+  { "slug": "health", "name": "Health", "order": 7 },
+  { "slug": "sports", "name": "Sports", "order": 8 },
+  { "slug": "entertainment", "name": "Entertainment", "order": 9 }
+]

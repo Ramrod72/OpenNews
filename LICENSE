@@ -1,0 +1,32 @@
+LICENSE PLACEHOLDER
+===================
+
+This repository does not yet have a license applied.
+
+The repository owner has not yet chosen a license. Until a license is added,
+default copyright law applies: no one other than the copyright holder has
+the right to reproduce, distribute, or create derivative works from this
+software.
+
+Before publishing this repository publicly, the owner should:
+
+1. Choose a license appropriate for an open-source news aggregator. Common
+   choices include:
+   - MIT — permissive, minimal restrictions.
+   - Apache-2.0 — permissive, includes an explicit patent grant.
+   - AGPL-3.0 — copyleft; notably requires that anyone who runs a modified
+     version of this software as a network service (e.g. a competing
+     hosted instance) must also make their modified source available. This
+     is a common choice for self-hostable web applications that the author
+     wants to keep open even when run as a service.
+   - GPL-3.0 — copyleft, but (unlike AGPL) does not cover the
+     network-use case.
+2. Replace this file's contents with the full text of the chosen license.
+3. Update the `license` field in `package.json`.
+4. Update the badge/section in `README.md` that currently points here.
+5. Add a short SPDX identifier comment (e.g. `// SPDX-License-Identifier:
+   MIT`) to source files if the chosen license's community conventions
+   expect one.
+
+This is the one part of the project the repository owner asked to handle
+personally — everything else here is ready to publish.
