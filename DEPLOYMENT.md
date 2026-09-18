@@ -43,7 +43,7 @@ backup file, start the stack again.
 Requires Node.js 22+ and, for SQLite, no extra services.
 
 ```bash
-git clone <this-repo-url> opennews && cd opennews
+git clone <this-repo-url> veriqen && cd veriqen
 npm ci --legacy-peer-deps
 cp .env.example .env   # edit DATABASE_URL to an absolute path outside the repo, e.g.
                          # DATABASE_URL="file:/var/lib/opennews/opennews.db"
@@ -67,7 +67,7 @@ Example systemd unit (`/etc/systemd/system/opennews-web.service`):
 
 ```ini
 [Unit]
-Description=OpenNews web
+Description=Veriqen web
 After=network.target
 
 [Service]

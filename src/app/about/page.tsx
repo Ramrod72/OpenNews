@@ -3,9 +3,9 @@ export const metadata = { title: "About" };
 export default function AboutPage() {
   return (
     <div className="prose prose-sm max-w-2xl">
-      <h1 className="text-2xl font-extrabold tracking-tight">About OpenNews</h1>
+      <h1 className="text-2xl font-extrabold tracking-tight">About Veriqen</h1>
       <p className="mt-4 text-sm leading-relaxed text-foreground-muted">
-        OpenNews is an open-source news aggregator. It collects headlines, publication times, and
+        Veriqen is an open-source news aggregator. It collects headlines, publication times, and
         short excerpts from publicly published RSS/Atom feeds, groups articles that appear to cover
         the same event into a single story, and links back to the original publishers for the full
         article.

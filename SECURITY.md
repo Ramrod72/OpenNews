@@ -12,7 +12,7 @@ should get an initial response within a few days.
 
 ## Threat model
 
-OpenNews fetches and displays content from external, untrusted sources
+Veriqen fetches and displays content from external, untrusted sources
 (RSS/Atom feeds run by third parties). The core security assumption is:
 **everything that comes from a feed is untrusted input**, including
 headlines, excerpts, author names, image URLs, and the feed XML itself.

@@ -1,6 +1,6 @@
 # API
 
-OpenNews exposes a small read-only JSON API alongside its server-rendered
+Veriqen exposes a small read-only JSON API alongside its server-rendered
 pages, plus an authenticated admin API. All responses are `application/json`.
 There is no API key for the public endpoints; they're rate-limited per-IP
 (120 req/min, see `src/proxy.ts`) rather than gated behind auth.

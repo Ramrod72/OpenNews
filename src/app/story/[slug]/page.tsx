@@ -210,7 +210,7 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
           <h2 className="mb-1 text-lg font-bold">Compare coverage</h2>
           <p className="mb-4 text-sm text-foreground-muted">
             How each outlet is reporting this story — headlines, timing, and details side by side.
-            OpenNews doesn&apos;t rank or endorse any source; use this to compare framing yourself.
+            Veriqen doesn&apos;t rank or endorse any source; use this to compare framing yourself.
           </p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {Array.from(bySource.values()).map((articles) => {
