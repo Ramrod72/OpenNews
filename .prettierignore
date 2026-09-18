@@ -1,0 +1,6 @@
+.next
+node_modules
+coverage
+prisma/dev.db*
+test/.tmp-test.db*
+Dockerfile

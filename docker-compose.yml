@@ -1,0 +1,67 @@
+name: opennews
+
+services:
+  web:
+    build: .
+    image: opennews:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "file:/data/opennews.db"
+      SESSION_SECRET: "${SESSION_SECRET:?Set SESSION_SECRET in .env, e.g. via: openssl rand -base64 32}"
+      ADMIN_PASSWORD_HASH: "${ADMIN_PASSWORD_HASH:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      AI_PROVIDER: "${AI_PROVIDER:-none}"
+      AI_BASE_URL: "${AI_BASE_URL:-http://host.docker.internal:11434}"
+      AI_MODEL: "${AI_MODEL:-llama3.1}"
+      NODE_ENV: production
+    volumes:
+      - opennews-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    build: .
+    image: opennews:latest
+    restart: unless-stopped
+    command: ["npx", "tsx", "worker/index.ts"]
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "file:/data/opennews.db"
+      SESSION_SECRET: "${SESSION_SECRET:?Set SESSION_SECRET in .env}"
+      AI_PROVIDER: "${AI_PROVIDER:-none}"
+      AI_BASE_URL: "${AI_BASE_URL:-http://host.docker.internal:11434}"
+      AI_MODEL: "${AI_MODEL:-llama3.1}"
+      WORKER_CRON: "${WORKER_CRON:-*/5 * * * *}"
+      NODE_ENV: production
+    volumes:
+      - opennews-data:/data
+
+# --- Optional: swap SQLite for PostgreSQL in production ---
+# 1. Uncomment the `postgres` service below.
+# 2. Change `provider = "sqlite"` to `provider = "postgresql"` in prisma/schema.prisma.
+# 3. Set DATABASE_URL on both services to:
+#      postgresql://opennews:opennews@postgres:5432/opennews
+# 4. Run `npx prisma migrate dev` locally once against Postgres to regenerate
+#    the migrations, then rebuild the image.
+#
+# postgres:
+#   image: postgres:16-alpine
+#   restart: unless-stopped
+#   environment:
+#     POSTGRES_USER: opennews
+#     POSTGRES_PASSWORD: opennews
+#     POSTGRES_DB: opennews
+#   volumes:
+#     - opennews-postgres:/var/lib/postgresql/data
+
+volumes:
+  opennews-data:
+  # opennews-postgres:

@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.github
+*.md
+.env
+.env.*
+!.env.example
+test/.tmp-test.db*
+prisma/dev.db*
+coverage
+npm-debug.log*
+.DS_Store
