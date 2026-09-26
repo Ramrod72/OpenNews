@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Menu, X, Bookmark, Flame } from "lucide-react";
+import { Menu, X, Bookmark, Flame, UserCircle } from "lucide-react";
 import type { Category } from "@prisma/client";
 
 export function MobileNav({ categories }: { categories: Category[] }) {
@@ -56,6 +56,13 @@ export function MobileNav({ categories }: { categories: Category[] }) {
               className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium hover:bg-surface-muted"
             >
               <Bookmark size={16} /> Bookmarks
+            </Link>
+            <Link
+              href="/account"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium hover:bg-surface-muted"
+            >
+              <UserCircle size={16} /> Account
             </Link>
 
             <div className="my-2 h-px bg-border" />

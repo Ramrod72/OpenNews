@@ -2,6 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getIronSession } from "iron-session";
 import { sessionOptions, type AdminSessionData } from "@/lib/auth/sessionOptions";
 import { clientIp, isRateLimited } from "@/lib/rateLimit";
+import { SESSION_COOKIE_NAME } from "@/lib/auth/consumer/sessionOptions";
+import { hashToken } from "@/lib/auth/consumer/tokens";
+import { resolveSessionUser } from "@/lib/auth/consumer/session";
 
 const API_RATE_LIMIT = 120; // requests
 const API_RATE_WINDOW_MS = 60_000; // per minute, per IP
@@ -18,6 +21,10 @@ export async function proxy(request: NextRequest) {
 
   if (pathname.startsWith("/admin") && pathname !== "/admin/login") {
     return guardAdmin(request);
+  }
+
+  if (pathname.startsWith("/account")) {
+    return guardAccount(request);
   }
 
   return NextResponse.next();
@@ -45,6 +52,27 @@ async function guardAdmin(request: NextRequest) {
   return response;
 }
 
+/**
+ * Gates the /account UI the same way guardAdmin() gates /admin, and for the
+ * same reason: a redirect() thrown from inside the page component can't
+ * change the HTTP status once the surrounding layout has already started
+ * streaming a 200 response, so it degrades to a client-side/meta-refresh
+ * redirect instead of a real 3xx. That's still safe (no account data is
+ * ever rendered before the throw), but middleware lets an anonymous
+ * request get a real 307 to /login instead of a 200. The page itself keeps
+ * its own redirect() as defense in depth.
+ */
+async function guardAccount(request: NextRequest) {
+  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const user = token ? await resolveSessionUser(hashToken(token)) : null;
+
+  if (!user) {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  return NextResponse.next();
+}
+
 export const config = {
-  matcher: ["/admin/:path*", "/api/:path*"],
+  matcher: ["/admin/:path*", "/api/:path*", "/account/:path*"],
 };
