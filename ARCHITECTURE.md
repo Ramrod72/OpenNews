@@ -50,9 +50,17 @@ or failing feed can never block a request.
 
 Bookmarks, followed/hidden categories, and saved searches are **not** in the
 database — they live entirely in the browser's `localStorage`
-(`src/lib/hooks/usePersonalization.ts`). There's no account system in this
-version; the architecture doesn't preclude adding one later (that local
-storage layer would become a cache in front of a synced account).
+(`src/lib/hooks/usePersonalization.ts`). That local layer is unrelated to
+the consumer account system below; migrating it into a synced,
+account-backed equivalent (`SavedStory`, `UserTopic`,
+`NotificationPreference` already exist in the schema for this) is a
+natural next step but hasn't been wired up yet.
+
+Consumer accounts add: **User** / **AuthSession** (session tokens, see
+below) / **Plan** / **Entitlement** (the Free/Basic/Pro feature matrix,
+seeded from `config/plans.json`) / **Subscription** (a user's current plan)
+/ **UsageRecord** (per-user, per-feature, per-calendar-month counters for
+quota-limited features).
 
 ## Ingestion (`src/lib/ingest/`)
 
@@ -150,6 +158,47 @@ Mutating admin API requests also require a custom header
 post can't set custom headers, and a cross-site `fetch` attempt to set one
 would trigger a CORS preflight this app never allows.
 
+## Consumer accounts (`src/lib/auth/consumer/`, `src/lib/entitlements.ts`)
+
+Deliberately **separate** from admin auth end to end: its own cookie
+(`veriqen_session`, vs. admin's `opennews_admin_session`), its own CSRF
+header (`x-veriqen-account: 1`, vs. admin's `x-opennews-admin: 1`), and its
+own session mechanism — a random 256-bit token handed to the browser in an
+`httpOnly` cookie, with only its SHA-256 hash stored server-side
+(`AuthSession.tokenHash`). That's a deliberate departure from admin's
+`iron-session` encrypted-cookie approach: DB-backed tokens can be revoked
+server-side (logout actually invalidates the token — an encrypted cookie
+can't be un-decrypted), and every session row records enough
+(`userAgent`, `ipAddress`, `lastUsedAt`) to eventually support a "sign out
+of other devices" feature.
+
+The logic is split the same way ingestion/clustering are: pure, testable
+Prisma code (`session.ts`'s `createSession`/`resolveSessionUser`/
+`revokeSession`, `service.ts`'s `registerUser`/`loginUser`) with no
+dependency on Next's request-scoped `cookies()`, versus a thin
+`next/headers`-touching wrapper (`getCurrentUser.ts`) that only glues the
+former to the current request. This is the same shape admin auth has, but
+admin's core check (`verifyAdminPassword`) had no tests before this work —
+consumer auth's core functions are covered directly (`test/consumerAuth.integration.test.ts`)
+precisely because they don't require mocking `next/headers` to reach.
+
+`/account` is gated the same way `/admin` is, and for the same underlying
+reason (see below): in `src/proxy.ts`, not only inside the page. The page
+also keeps its own `redirect()` check as defense in depth, but middleware
+is what guarantees a real HTTP redirect rather than a 200 with a
+client-side/meta-refresh fallback — see SECURITY.md for the specific
+finding.
+
+**Entitlements** (`src/lib/entitlements.ts`) are resolved from one place:
+`getPlan(userId)` (Free for `userId = null`, i.e. anonymous visitors are
+Free users for every public feature), `can(userId, feature)` for
+boolean gates, `getLimit`/`checkUsage`/`recordUsage` for quota-limited
+features (calendar-month buckets). Call sites are meant to use these
+rather than inspecting a plan slug directly, so every feature's rule lives
+in one seedable table (`config/plans.json` → `prisma/seedPlans.ts`)
+instead of scattered `user.plan === "pro"` checks. An unrecognized feature
+key resolves to "no access" (fails closed), not "unlimited."
+
 ## Ads (`src/components/ads/`)
 
 `AdSlot` is provider-agnostic: with nothing configured it renders a
@@ -170,6 +219,14 @@ there for that network's domain — documented in the Admin → Settings UI.
 - The in-memory rate limiter (`src/lib/rateLimit.ts`) is per-process; it
   resets on restart and isn't shared across multiple app instances behind a
   load balancer.
-- There's no account system; personalization is local-only by design (see
-  above), but the code is structured so a synced-accounts feature could sit
-  behind the same hooks later.
+- Bookmarks/topics/notification-preference personalization is still
+  local-only (`localStorage`); the schema (`SavedStory`, `UserTopic`,
+  `NotificationPreference`) supports migrating it to the account system,
+  but the UI hasn't been wired up to do so yet.
+- There's no billing integration yet — the account page's "upgrade" action
+  is a placeholder that says billing isn't configured, not a Stripe (or
+  similar) checkout flow.
+- Expired/revoked `AuthSession` rows aren't pruned by anything — they're
+  already inert (`resolveSessionUser` rejects them), just not deleted, so
+  the table grows unboundedly. A periodic cleanup (cron or a check on
+  write) is a natural addition once session volume makes it worth it.

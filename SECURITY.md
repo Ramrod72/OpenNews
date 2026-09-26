@@ -26,6 +26,10 @@ What's in scope:
 - Abuse of the public search/story API endpoints.
 - Unauthorized access to the admin panel or its API.
 - Cross-site request forgery against admin actions.
+- Unauthorized access to a consumer account, or to another user's data
+  through it; privilege escalation between the Free/Basic/Pro plans;
+  cross-site request forgery against consumer account actions; consumer
+  and admin auth interfering with or being mistaken for each other.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -102,6 +106,79 @@ loosen it.
 admin session to work at all in production (an insecure fallback is used
 otherwise and a warning is logged). Admin passwords should be stored as a
 bcrypt hash, not plaintext, in any deployment beyond local development.
+
+**Consumer password storage.** Passwords are hashed with `bcryptjs` (cost
+factor 12) — never stored or logged in plaintext. bcrypt's own 72-byte
+input truncation is why the registration/login schemas cap password length
+at 72 characters, rather than silently truncating a longer password a user
+might reuse elsewhere.
+
+**Consumer session fixation / theft.** `registerUser`/`loginUser` always
+mint a brand-new random 256-bit token and a brand-new `AuthSession` row —
+there is no code path that "upgrades" a pre-existing (e.g.
+attacker-set) cookie value into an authenticated session, which is what
+rules out fixation. Only the token's SHA-256 hash is stored server-side
+(`AuthSession.tokenHash`); the raw token exists only in the `httpOnly`
+cookie and the one response that sets it, so a database read alone can't
+recover a working session token. The cookie is `httpOnly` (unreadable from
+JS, so immune to being exfiltrated by a feed-derived or third-party XSS
+payload even if one slipped past sanitization), `sameSite: "lax"`, and
+`secure` in production.
+
+**Consumer/admin auth collision.** The two systems share nothing: separate
+cookies (`veriqen_session` vs. `opennews_admin_session`), separate CSRF
+headers (`x-veriqen-account: 1` vs. `x-opennews-admin: 1`), separate
+session mechanisms (DB-backed opaque tokens vs. `iron-session` encrypted
+cookies), and separate middleware guards in `src/proxy.ts`. Regression
+tests (`src/lib/auth/password.test.ts`) cover the existing admin
+credential check to guard against this work accidentally breaking it.
+
+**CSRF against consumer account actions.** Same approach as admin: every
+mutating `/api/account/*` request must include `x-veriqen-account: 1`
+(`src/lib/auth/consumer/csrf.ts`), which a cross-site form post can't set
+and a cross-site script can't set without triggering a CORS preflight this
+app never approves.
+
+**Consumer account enumeration.** Login is fully closed: a wrong password
+and a nonexistent email return the exact same `401` and message ("Invalid
+email or password."), and a nonexistent email is checked against a fixed
+dummy bcrypt hash so the response time doesn't leak which case occurred.
+Registration is a deliberate, disclosed exception: a duplicate-email
+attempt gets a distinct "already registered" error rather than a generic
+one. Genuinely closing that hole requires an email-verification flow (so
+the registration response can't tell the browser whether the account was
+newly created), and this project has no email-sending infrastructure to
+build a real one on — per the project's standing principle of never
+faking functionality that doesn't work, a fake "check your email" message
+that never actually sends anything is a worse false promise than showing
+the error honestly.
+
+**Consumer login brute-forcing.** Login is rate-limited both per-IP and
+per-email (`src/lib/rateLimit.ts`, reused from the existing limiter, not
+reimplemented) — the per-email limit exists so distributing an attack
+across many IPs still can't brute-force one specific account.
+
+**Consumer authorization bypass.** `/api/account` and every consumer
+data-fetching path check the session server-side (`getCurrentUser()` /
+`resolveSessionUser()`) — hiding a button in the UI is never treated as
+sufficient. `/account`, the account page, is additionally gated in
+`src/proxy.ts` middleware, for the same reason `/admin` is (see
+ARCHITECTURE.md): a `redirect()` called from inside the page component
+can't change the HTTP status code once the surrounding layout has already
+started streaming its 200 response, so on its own it degrades to a
+client-side/meta-refresh redirect for an anonymous request rather than a
+real `307`. That was confirmed to leak **no** account data in this case
+(the redirect happens before the page fetches or renders anything
+user-specific), unlike the admin layout bug described in ARCHITECTURE.md
+which did leak real data — but middleware closes the gap entirely rather
+than relying on that distinction, and gives a real `307` in every case,
+matching how `/admin` is already handled.
+
+**Entitlement/plan checks.** All of it goes through
+`src/lib/entitlements.ts` rather than ad hoc `user.plan === "pro"` checks
+scattered through route handlers, and an unrecognized feature key fails
+closed (no access), not open (unlimited) — a typo in a feature key can
+only ever take access away, never accidentally grant it.
 
 ## Dependency scanning
 

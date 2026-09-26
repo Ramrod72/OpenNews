@@ -102,6 +102,28 @@ Public list of active sources (for attribution / source-filtering UI).
 { "sources": [{ "id": "...", "name": "...", "homepageUrl": "...", "categorySlug": "world" }] }
 ```
 
+## Consumer account endpoints
+
+These use a separate `veriqen_session` cookie (distinct from the admin's
+`opennews_admin_session`) and a separate CSRF header, `x-veriqen-account: 1`,
+required on all of them. Anonymous visitors are treated as Free-plan users
+for every public feature — there's nothing to authenticate for read-only
+browsing.
+
+| Method & path                | Purpose                                                                                                                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/account/register` | `{ email, password, displayName? }` → creates a User on the Free plan, sets session cookie, `201`. `409` on a duplicate email.                                             |
+| `POST /api/account/login`    | `{ email, password }` → sets session cookie, `200`. `401` with a generic "Invalid email or password." for any failure (wrong password or unknown email — see SECURITY.md). |
+| `POST /api/account/logout`   | revokes the current session and clears the cookie, `200`.                                                                                                                  |
+| `GET /api/account`           | current user + resolved plan/entitlements. `401` if not signed in.                                                                                                         |
+| `GET /api/plans`             | public; all active plans with their entitlement matrix (no auth required).                                                                                                 |
+
+Registration and login are both rate-limited per IP
+(`src/lib/rateLimit.ts`); login is additionally rate-limited per email, so
+one attacker IP can't lock out an arbitrary victim account by exhausting the
+IP-based limit alone, and distributed attempts against one account still hit
+the email-based limit.
+
 ## Admin endpoints (require an authenticated admin session)
 
 All of these require the `opennews_admin_session` cookie (set via
