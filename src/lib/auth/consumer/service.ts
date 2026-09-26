@@ -1,6 +1,18 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyAgainstDummyHash, verifyPassword } from "./password";
 import { createSession, type NewSession } from "./session";
+
+const DUPLICATE_EMAIL_ERROR = "An account with this email already exists.";
+
+function isUniqueEmailViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002" &&
+    Array.isArray(error.meta?.target) &&
+    (error.meta.target as string[]).includes("email")
+  );
+}
 
 export const FREE_PLAN_SLUG = "free";
 
@@ -47,25 +59,39 @@ export async function registerUser(
     // success — both worse than a direct, rate-limited error. See
     // SECURITY.md for this trade-off and the mitigation path once email
     // sending exists (User.emailVerifiedAt is already reserved for it).
-    return { error: "An account with this email already exists." };
+    return { error: DUPLICATE_EMAIL_ERROR };
   }
 
   const passwordHash = await hashPassword(input.password);
 
-  const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.user.create({
-      data: {
-        email,
-        passwordHash,
-        displayName: input.displayName?.trim() || null,
-        lastLoginAt: new Date(),
-      },
+  let user;
+  try {
+    user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email,
+          passwordHash,
+          displayName: input.displayName?.trim() || null,
+          lastLoginAt: new Date(),
+        },
+      });
+      await tx.subscription.create({
+        data: { userId: created.id, planId: freePlan.id, status: "active" },
+      });
+      return created;
     });
-    await tx.subscription.create({
-      data: { userId: created.id, planId: freePlan.id, status: "active" },
-    });
-    return created;
-  });
+  } catch (error) {
+    // Two concurrent registrations for the same email both pass the
+    // findUnique check above before either has committed, so the database's
+    // own unique constraint — not the check above — is what actually
+    // prevents a duplicate here. Map that race to the same error the
+    // sequential case returns, rather than letting an unhandled
+    // PrismaClientKnownRequestError surface as a raw 500.
+    if (isUniqueEmailViolation(error)) {
+      return { error: DUPLICATE_EMAIL_ERROR };
+    }
+    throw error;
+  }
 
   const session = await createSession(user.id, meta);
   return {

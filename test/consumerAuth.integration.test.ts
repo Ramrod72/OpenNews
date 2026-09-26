@@ -50,6 +50,31 @@ describe("registerUser", () => {
     const after = await prisma.user.count({ where: { email: "alice@consumerauth.test" } });
     expect(after).toBe(before);
   });
+
+  it("handles two concurrent registrations for the same email without throwing", async () => {
+    // Both requests can pass the findUnique pre-check before either has
+    // committed, so the only thing that actually stops the duplicate is
+    // the database's unique constraint on User.email, surfaced as a
+    // Prisma P2002 error — this must be mapped to the same clean "already
+    // exists" error, not left to bubble up as an unhandled exception.
+    const email = "race@consumerauth.test";
+    const [a, b] = await Promise.all([
+      registerUser({ email, password: "correct-horse-1" }),
+      registerUser({ email, password: "correct-horse-2" }),
+    ]);
+
+    const outcomes = [a, b];
+    const successes = outcomes.filter((r) => !("error" in r));
+    const failures = outcomes.filter((r) => "error" in r);
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as { error: string }).error).toBe(
+      "An account with this email already exists.",
+    );
+
+    const count = await prisma.user.count({ where: { email } });
+    expect(count).toBe(1);
+  });
 });
 
 describe("loginUser", () => {

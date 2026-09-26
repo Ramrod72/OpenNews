@@ -226,3 +226,7 @@ there for that network's domain — documented in the Admin → Settings UI.
 - There's no billing integration yet — the account page's "upgrade" action
   is a placeholder that says billing isn't configured, not a Stripe (or
   similar) checkout flow.
+- Expired/revoked `AuthSession` rows aren't pruned by anything — they're
+  already inert (`resolveSessionUser` rejects them), just not deleted, so
+  the table grows unboundedly. A periodic cleanup (cron or a check on
+  write) is a natural addition once session volume makes it worth it.
