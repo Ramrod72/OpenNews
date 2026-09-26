@@ -46,3 +46,35 @@ documented RSS programs (BBC, The Guardian, NPR, major tech/science trade
 press, and official public-sector feeds such as USGS and UN News). Feeds do
 go stale or change URLs over time — check **Admin → Feed health** after
 deploying and prune or fix anything that consistently fails.
+
+## Plans & entitlements
+
+- **`plans.json`** — the Free/Basic/Pro subscription tiers and their
+  feature/quota matrix. Each plan entry is:
+
+  ```json
+  {
+    "slug": "basic",
+    "name": "Basic",
+    "priceCents": 499,
+    "billingInterval": "month",
+    "entitlements": {
+      "ads_enabled": false,
+      "saved_stories_limit": null,
+      "ai_monthly_quota": 0
+    }
+  }
+  ```
+
+  Each entitlement's JSON type decides how it's stored: `true`/`false`
+  becomes an on/off feature flag (`Entitlement.boolValue`); a number or
+  `null` becomes a quota (`Entitlement.limitValue`, where `null` means
+  unlimited). Run `npm run db:seed` after editing to apply changes —
+  pricing and feature gating can change without any application code
+  changes. See `prisma/seedPlans.ts` for the full list of recognized
+  feature keys.
+
+  Application code should never check a user's plan slug directly
+  (`if (user.plan === "pro")`) — a centralized entitlement lookup helper
+  (added in a later phase) reads these rows instead, so a plan's features
+  can be changed here without touching application logic.

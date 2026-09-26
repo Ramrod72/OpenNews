@@ -49,18 +49,19 @@ model Category {
   name  String
   order Int    @default(0)
 
-  articles Article[]
-  clusters StoryCluster[]
+  articles   Article[]
+  clusters   StoryCluster[]
+  userTopics UserTopic[]
 }
 
 /// A single article/item pulled from a source feed.
 model Article {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   sourceId        String
-  source          Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  url             String   @unique
+  source          Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  url             String    @unique
   /// SHA-256 of the normalized URL, used for fast dedupe lookups
-  urlHash         String   @unique
+  urlHash         String    @unique
   title           String
   /// Lowercased, punctuation-stripped title used for similarity comparisons
   titleNormalized String
@@ -71,7 +72,7 @@ model Article {
   categoryId      String?
   category        Category? @relation(fields: [categoryId], references: [id])
   publishedAt     DateTime
-  fetchedAt       DateTime @default(now())
+  fetchedAt       DateTime  @default(now())
   guid            String?
 
   clusterId String?
@@ -106,8 +107,9 @@ model StoryCluster {
   breakingScore Float     @default(0)
   imageUrl      String?
 
-  articles Article[]
-  keywords ClusterKeyword[]
+  articles     Article[]
+  keywords     ClusterKeyword[]
+  savedByUsers SavedStory[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -122,14 +124,15 @@ model Keyword {
   id   String @id @default(cuid())
   term String @unique
 
-  articles ArticleKeyword[]
-  clusters ClusterKeyword[]
+  articles   ArticleKeyword[]
+  clusters   ClusterKeyword[]
+  userTopics UserTopic[]
 }
 
 model ArticleKeyword {
   articleId String
   keywordId String
-  weight    Float @default(1)
+  weight    Float  @default(1)
 
   article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
   keyword Keyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
@@ -140,7 +143,7 @@ model ArticleKeyword {
 model ClusterKeyword {
   clusterId String
   keywordId String
-  weight    Float @default(1)
+  weight    Float  @default(1)
 
   cluster StoryCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
   keyword Keyword      @relation(fields: [keywordId], references: [id], onDelete: Cascade)
@@ -170,4 +173,197 @@ model AdminSetting {
   /// JSON-encoded value
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Consumer accounts + subscriptions (Veriqen Phase 2)
+//
+// Deliberately separate from the single shared admin credential above
+// (AdminSetting, src/lib/auth/session.ts): these models back real per-user
+// accounts for the public product, with their own session mechanism. No
+// existing model's columns are altered by this section — Category,
+// Keyword, and StoryCluster above only gained new *opposite* relation
+// fields (userTopics / savedByUsers), which Prisma resolves via the foreign
+// key living on the new child tables below, so migrating this in adds
+// tables only and never touches Article/Source/Category/Keyword/
+// StoryCluster/FeedFetchLog/AdminSetting's own columns.
+//
+// Status-like fields (Subscription.status, Plan.billingInterval) are kept
+// as plain `String` rather than Prisma `enum`, matching the rest of this
+// schema: Prisma enums aren't supported on the sqlite connector, and this
+// schema is written to run unchanged on SQLite or Postgres.
+// ---------------------------------------------------------------------------
+
+/// A registered end-user account (distinct from the single admin credential).
+model User {
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  /// bcrypt hash — never plaintext, never sent to client JS.
+  passwordHash       String
+  displayName        String?
+  emailVerifiedAt    DateTime?
+  lastLoginAt        DateTime?
+  /// Billing-provider customer id (e.g. a Stripe customer id). Lives here
+  /// rather than on Subscription: a billing-provider customer is 1:1 with
+  /// the account and commonly exists before any subscription does (a saved
+  /// payment method, a trial), and a webhook's most common lookup is
+  /// "find the user for this customer id" — a direct unique lookup here,
+  /// rather than joining through subscription history to guess the
+  /// current row. Unset until a billing provider is configured (Phase 12).
+  externalCustomerId String?   @unique
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sessions               AuthSession[]
+  subscriptions          Subscription[]
+  savedStories           SavedStory[]
+  topics                 UserTopic[]
+  usageRecords           UsageRecord[]
+  notificationPreference NotificationPreference?
+}
+
+/// A consumer login session. Unlike the admin's stateless signed cookie,
+/// this is DB-backed so sessions can be listed/revoked (e.g. "log out
+/// everywhere", account deletion). Only a SHA-256 hash of the session
+/// token is stored; the raw token lives solely in the browser's httpOnly
+/// cookie, so a database read alone can never authenticate as the user.
+model AuthSession {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  userAgent  String?
+  ipAddress  String?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// A subscription tier (Free / Basic / Pro). A real table, not a hardcoded
+/// enum, so pricing/plans can change without an application redeploy.
+model Plan {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  priceCents      Int      @default(0)
+  /// Billing cadence, e.g. "month". Free plans use this as a nominal value.
+  billingInterval String   @default("month")
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  entitlements  Entitlement[]
+  subscriptions Subscription[]
+}
+
+/// A single feature flag/quota attached to a plan. This is the centralized
+/// entitlement system: application code should look up
+/// `Entitlement` rows by (plan, feature) rather than scattering
+/// `if (user.plan === "PRO")` checks throughout the codebase (the feature
+/// lookup helper itself lands in Phase 3).
+model Entitlement {
+  id         String   @id @default(cuid())
+  planId     String
+  plan       Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  /// Stable feature key, e.g. "ads_enabled", "saved_stories_limit".
+  feature    String
+  /// Set for boolean on/off features.
+  boolValue  Boolean?
+  /// Set for numeric quotas; null means unlimited.
+  limitValue Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([planId, feature])
+}
+
+/// A user's subscription to a plan over time. Every user — including
+/// free users — has a Subscription row (to plan "free") so "what plan is
+/// this user on" is always a single consistent lookup rather than a
+/// nullable special case. Billing fields are nullable/unset until Phase 12
+/// wires in a real payment provider.
+model Subscription {
+  id                     String    @id @default(cuid())
+  userId                 String
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId                 String
+  plan                   Plan      @relation(fields: [planId], references: [id])
+  /// "active" | "canceled" | "past_due" | "trialing" | "incomplete" | "expired"
+  status                 String    @default("active")
+  /// e.g. "stripe"; null until a billing provider is configured (Phase 12).
+  billingProvider        String?
+  /// The billing-provider subscription object id (1:1 with this row,
+  /// unlike the customer id — see User.externalCustomerId).
+  externalSubscriptionId String?
+  currentPeriodEnd       DateTime?
+  cancelAtPeriodEnd      Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+/// Tracks consumption of quota-limited features (e.g. Pro AI operations)
+/// per user per billing/usage period, so expensive operations can be
+/// rate-limited against Entitlement.limitValue.
+model UsageRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  feature     String
+  periodStart DateTime
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, feature, periodStart])
+}
+
+/// A story a user has bookmarked to their account (server-side; distinct
+/// from the anonymous, localStorage-only bookmarks the public site already
+/// supports — see src/lib/hooks/usePersonalization.ts).
+model SavedStory {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clusterId String
+  cluster   StoryCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+
+  @@unique([userId, clusterId])
+}
+
+/// A topic a user follows: an existing Category, an extracted Keyword, or
+/// a free-text label if neither applies. If the referenced Category/Keyword
+/// is later removed, the row survives (FK set null) rather than vanishing,
+/// since `label` can stand alone as the user-facing description.
+model UserTopic {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  keywordId  String?
+  keyword    Keyword?  @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+  label      String?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+/// One row per user; notification channel toggles. Extend with new columns
+/// (additive) as new notification types are added.
+model NotificationPreference {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailBreakingNews Boolean  @default(false)
+  emailDailyDigest  Boolean  @default(false)
+  emailStoryUpdates Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
