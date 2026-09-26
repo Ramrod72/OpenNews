@@ -6,6 +6,7 @@ CREATE TABLE "User" (
     "displayName" TEXT,
     "emailVerifiedAt" DATETIME,
     "lastLoginAt" DATETIME,
+    "externalCustomerId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
 );
@@ -55,7 +56,6 @@ CREATE TABLE "Subscription" (
     "planId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'active',
     "billingProvider" TEXT,
-    "externalCustomerId" TEXT,
     "externalSubscriptionId" TEXT,
     "currentPeriodEnd" DATETIME,
     "cancelAtPeriodEnd" BOOLEAN NOT NULL DEFAULT false,
@@ -113,6 +113,9 @@ CREATE TABLE "NotificationPreference" (
 
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_externalCustomerId_key" ON "User"("externalCustomerId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "AuthSession_tokenHash_key" ON "AuthSession"("tokenHash");

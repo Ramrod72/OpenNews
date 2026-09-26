@@ -196,15 +196,23 @@ model AdminSetting {
 
 /// A registered end-user account (distinct from the single admin credential).
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
+  id                 String    @id @default(cuid())
+  email              String    @unique
   /// bcrypt hash — never plaintext, never sent to client JS.
-  passwordHash    String
-  displayName     String?
-  emailVerifiedAt DateTime?
-  lastLoginAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  passwordHash       String
+  displayName        String?
+  emailVerifiedAt    DateTime?
+  lastLoginAt        DateTime?
+  /// Billing-provider customer id (e.g. a Stripe customer id). Lives here
+  /// rather than on Subscription: a billing-provider customer is 1:1 with
+  /// the account and commonly exists before any subscription does (a saved
+  /// payment method, a trial), and a webhook's most common lookup is
+  /// "find the user for this customer id" — a direct unique lookup here,
+  /// rather than joining through subscription history to guess the
+  /// current row. Unset until a billing provider is configured (Phase 12).
+  externalCustomerId String?   @unique
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   sessions               AuthSession[]
   subscriptions          Subscription[]
@@ -288,7 +296,8 @@ model Subscription {
   status                 String    @default("active")
   /// e.g. "stripe"; null until a billing provider is configured (Phase 12).
   billingProvider        String?
-  externalCustomerId     String?
+  /// The billing-provider subscription object id (1:1 with this row,
+  /// unlike the customer id — see User.externalCustomerId).
   externalSubscriptionId String?
   currentPeriodEnd       DateTime?
   cancelAtPeriodEnd      Boolean   @default(false)
