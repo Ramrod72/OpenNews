@@ -132,4 +132,29 @@ describe("getAccountPlanSummary", () => {
     const labels = summary.highlights.map((h) => h.label);
     expect(labels).toContain("Unlimited saved stories");
   });
+
+  it("a plan with an unlimited (null) AI quota still reports AI usage, not `null` — regression for the same ?? 0 bug the config-driven cases can't exercise (no seeded plan has a null ai_monthly_quota today)", async () => {
+    const unlimitedPlan = await prisma.plan.create({
+      data: { slug: "unlimited-ai-test", name: "Unlimited AI Test", priceCents: 1999 },
+    });
+    await prisma.entitlement.create({
+      data: { planId: unlimitedPlan.id, feature: "ai_monthly_quota", limitValue: null },
+    });
+    const unlimitedUser = await prisma.user.create({
+      data: { email: "unlimited-ai@example.com", passwordHash: "x" },
+    });
+    await prisma.subscription.create({
+      data: { userId: unlimitedUser.id, planId: unlimitedPlan.id, status: "active" },
+    });
+
+    try {
+      const summary = await getAccountPlanSummary(unlimitedUser.id);
+      expect(summary.aiUsage).toEqual({ allowed: true, used: 0, limit: null });
+    } finally {
+      await prisma.subscription.deleteMany({ where: { userId: unlimitedUser.id } });
+      await prisma.user.delete({ where: { id: unlimitedUser.id } });
+      await prisma.entitlement.deleteMany({ where: { planId: unlimitedPlan.id } });
+      await prisma.plan.delete({ where: { id: unlimitedPlan.id } });
+    }
+  });
 });

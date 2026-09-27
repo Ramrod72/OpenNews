@@ -130,7 +130,14 @@ export async function getAccountPlanSummary(userId: string): Promise<AccountPlan
   });
 
   const current = planViews.find((p) => p.isCurrent) ?? planViews[0];
-  const aiQuota = currentPlan.entitlements.ai_monthly_quota?.limitValue ?? 0;
+
+  // limitValue is meaningfully `null` for an unlimited quota, distinct from
+  // a missing entitlement row (no access) — `?.limitValue ?? 0` would wrongly
+  // collapse the two and hide the AI usage section for a hypothetical
+  // unlimited-quota plan, so presence and value are checked separately.
+  const aiEntitlement = currentPlan.entitlements.ai_monthly_quota;
+  const aiQuotaLimit = aiEntitlement ? aiEntitlement.limitValue : 0;
+  const hasAiQuota = aiQuotaLimit === null || aiQuotaLimit > 0;
 
   return {
     slug: current.slug,
@@ -138,7 +145,7 @@ export async function getAccountPlanSummary(userId: string): Promise<AccountPlan
     priceCents: current.priceCents,
     billingInterval: current.billingInterval,
     highlights: current.highlights,
-    aiUsage: aiQuota > 0 ? await checkUsage(userId, "ai_monthly_quota") : null,
+    aiUsage: hasAiQuota ? await checkUsage(userId, "ai_monthly_quota") : null,
     otherPlans: planViews.filter((p) => !p.isCurrent),
   };
 }
