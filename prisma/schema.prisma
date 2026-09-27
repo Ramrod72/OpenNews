@@ -16,15 +16,22 @@ generator client {
 }
 
 /// A configured news feed (RSS/Atom) that the ingestion worker polls.
+/// Phase 6 adds an optional publisher-profile layer (description through
+/// profileUpdatedAt below) on top of the existing ingestion fields — every
+/// added column is nullable so a Source created by feed ingestion alone,
+/// with no profile ever filled in, remains fully valid. See ARCHITECTURE.md
+/// for the source-profile vs. external-assessment distinction.
 model Source {
   id                   String    @id @default(cuid())
   name                 String
   /// Feed URL (RSS/Atom endpoint)
   url                  String    @unique
-  /// Public homepage of the publisher, used for attribution links
+  /// Public homepage of the publisher, used for attribution links AND as
+  /// the profile's "Website" field — deliberately not a separate column.
   homepageUrl          String?
   /// Default category slug applied to articles from this source
   categorySlug         String
+  /// Publisher logo/wordmark, also used as the profile's image.
   logoUrl              String?
   active               Boolean   @default(true)
   fetchIntervalMinutes Int       @default(30)
@@ -36,10 +43,73 @@ model Source {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  articles  Article[]
-  fetchLogs FeedFetchLog[]
+  /// Plain-text (HTML stripped on write) description of the publisher.
+  description      String?
+  /// One of SOURCE_TYPE_VALUES (src/lib/validation/sourceProfile.ts) — a
+  /// plain String, not a Prisma enum, for the same Postgres-portability
+  /// reason every other closed value set in this schema is a validated
+  /// String (see Subscription.status).
+  sourceType       String?
+  /// Free-text country name — deliberately not an ISO-code lookup table;
+  /// nothing currently needs to query/filter by it.
+  country          String?
+  /// Parent company / owning organization, free text.
+  ownership        String?
+  foundedYear      Int?
+  /// When an admin last edited the profile fields above. Deliberately
+  /// separate from the row's own `updatedAt`, which also changes on every
+  /// routine ingestion fetch and so can't answer "when was this profile
+  /// last reviewed."
+  profileUpdatedAt DateTime?
+
+  articles            Article[]
+  fetchLogs           FeedFetchLog[]
+  externalAssessments ExternalAssessment[]
 
   @@index([active])
+}
+
+/// A third party's published assessment of a Source — e.g. a political-lean
+/// or factuality rating — always attributed to the organization that made
+/// it. Veriqen never derives or averages these; see ARCHITECTURE.md. One
+/// Source can have many assessments across providers and types, and the
+/// same provider/type pair isn't unique: a provider's rating can be
+/// recorded more than once over time without overwriting history.
+model ExternalAssessment {
+  id       String @id @default(cuid())
+  sourceId String
+  source   Source @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  /// The organization that produced this assessment, e.g. "Example Rating
+  /// Institute" (plain text; never invented or copied from a real rating
+  /// service without a licensing decision — see SECURITY.md).
+  provider       String
+  /// One of ASSESSMENT_TYPE_VALUES (src/lib/validation/sourceProfile.ts),
+  /// e.g. "political_lean", "factuality" — same String-not-enum reasoning
+  /// as Source.sourceType.
+  assessmentType String
+  /// The rating itself, in the provider's own words (e.g. "Left-Center",
+  /// "High factual reporting") — free text on purpose. Different
+  /// providers use incompatible scales; Veriqen never converts these to a
+  /// shared numeric score.
+  ratingValue    String
+  /// Optional description of the provider's own scale, e.g. "Left /
+  /// Left-Center / Center / Right-Center / Right".
+  ratingScale    String?
+  /// Where this assessment can be independently verified.
+  referenceUrl   String?
+  /// When the provider published/last updated this assessment, if known.
+  assessedAt     DateTime?
+  /// When Veriqen recorded this assessment — distinct from assessedAt.
+  retrievedAt    DateTime  @default(now())
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sourceId])
+  @@index([provider])
+  @@index([assessmentType])
 }
 
 /// A news topic/section (World, Business, Technology, ...)

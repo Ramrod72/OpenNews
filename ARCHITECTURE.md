@@ -324,6 +324,88 @@ Nothing about a viewer is ever templated into an ad snippet/script before
 injection either. No personal information reaches an ad provider through
 Veriqen.
 
+## Source profiles and external assessments (Phase 6)
+
+Three deliberately separate concepts, only the first two of which exist yet:
+
+- **Source profile** — descriptive facts about a publisher: type, country,
+  ownership, founded year, description, website, logo. Added as new
+  nullable columns directly on the existing `Source` model
+  (`description`, `sourceType`, `country`, `ownership`, `foundedYear`,
+  `profileUpdatedAt`), reusing the pre-existing `homepageUrl`/`logoUrl`
+  columns as the profile's "Website"/logo rather than adding redundant
+  parallel fields. Every field is optional and every pre-Phase-6 `Source`
+  row remains valid with them all `null` — nothing about ingestion,
+  clustering, or the existing public `/api/sources` list changes.
+- **External source assessment** — a third party's published judgment
+  about a source (political lean, factuality, credibility, reliability),
+  stored in a new `ExternalAssessment` model
+  (`sourceId`, `provider`, `assessmentType`, `ratingValue`, `ratingScale`,
+  `referenceUrl`, `assessedAt`, `retrievedAt`, `notes`). `provider` is
+  required on every row — there is no way to store an assessment without
+  attribution — and the schema intentionally has **no** uniqueness
+  constraint on `(sourceId, provider, assessmentType)`, so a source can
+  carry multiple assessments of the same type from different providers,
+  including ones that disagree. Nothing anywhere averages, merges, or
+  otherwise synthesizes a single score across providers; `toPublicSourceProfile()`
+  and the `/sources/[id]` page both render every assessment as its own
+  record, grouped by type, each showing its own provider.
+- **Veriqen article analysis** — article-level framing/language analysis —
+  is explicitly **not** built in this phase. Nothing in the schema, API,
+  or UI implies Veriqen has an opinion about a source's bias; assessments
+  are always presented as "provider X says Y," never as Veriqen's own
+  determination.
+
+`sourceType` and `assessmentType` are plain `String` columns validated at
+the application layer against a fixed value list
+(`src/lib/validation/sourceProfile.ts`'s `SOURCE_TYPE_VALUES`/
+`ASSESSMENT_TYPE_VALUES`) — the same no-Prisma-enum convention the schema
+already uses for `Subscription.status`, kept for Postgres/SQLite
+portability. Extending either list is a one-line change, not a migration.
+
+**Licensing boundary.** No proprietary rating-provider data (AllSides,
+Media Bias/Fact Check, Ad Fontes, Ground News, or similar) was scraped,
+copied, or seeded anywhere in this phase — the repository contains no
+licensing agreement with any such provider. This phase only builds the
+framework capable of storing an attributed assessment from any provider;
+which provider(s) Veriqen actually licenses and imports data from is a
+future decision. Tests and any demonstration data use obviously fictional
+provider names ("Example Rating Institute (fictional test provider)",
+"Sample Media Observatory (fictional test provider)") that cannot be
+mistaken for a real rating.
+
+**API and UI.** `GET /api/sources/[id]` (public, unauthenticated) and the
+`/sources/[id]` page both call `getSourceProfile()`
+(`src/lib/sourceProfile.ts` — one Prisma query with the assessments
+`include`d, no N+1) and serialize through `toPublicSourceProfile()`, an
+explicit allowlist that excludes the feed URL and every ingestion-health
+field (`active`, `fetchIntervalMinutes`, `lastFetchedAt`, `lastError`,
+`consecutiveFailures`, ...) the same way `serializeCluster()` already does
+for stories. A profile resolves even for a paused (`active: false`)
+source — pausing only affects ingestion, and a story that already links
+to a since-paused source shouldn't get a broken profile link. Missing
+metadata is always rendered as an explicit "Not listed" rather than
+omitted or defaulted to something that reads as real data, and a source
+with zero assessments shows an explicit empty state rather than an
+empty section.
+
+The story page's "Compare coverage" section links each outlet's name to
+its `/sources/[id]` profile — the one Phase 6 integration point into the
+existing story UI, deliberately not a full provenance redesign.
+
+Admin editing extends the existing source-management API
+(`PATCH /api/admin/sources/[id]`) with the new profile fields, plus two
+new nested routes for assessment CRUD
+(`POST /api/admin/sources/[id]/assessments`,
+`PATCH`/`DELETE /api/admin/sources/[id]/assessments/[assessmentId]`), all
+behind the same `requireAdmin()` guard (session + CSRF) every other admin
+mutation uses. Every free-text field an admin can enter (description,
+country, ownership, provider, rating value/scale, notes) is passed through
+`toPlainText()` before being stored — the same "never store or render raw
+HTML from user/admin input" rule ingestion already follows for feed
+content — even though nothing in this app renders these fields via
+`dangerouslySetInnerHTML` in the first place.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate

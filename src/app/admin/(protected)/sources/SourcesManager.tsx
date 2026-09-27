@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import type { Category, Source } from "@prisma/client";
-import { Plus, Trash2, Pause, Play, ExternalLink } from "lucide-react";
+import { Plus, Trash2, Pause, Play, ExternalLink, Pencil } from "lucide-react";
 import { CSRF_HEADER } from "@/lib/auth/csrf";
 
 type SourceWithCount = Source & { _count: { articles: number } };
@@ -197,6 +198,13 @@ export function SourcesManager({
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-1">
+                    <Link
+                      href={`/admin/sources/${s.id}`}
+                      title="Edit profile & assessments"
+                      className="rounded p-1.5 hover:bg-surface-muted"
+                    >
+                      <Pencil size={14} />
+                    </Link>
                     <button
                       type="button"
                       title={s.active ? "Pause" : "Resume"}
