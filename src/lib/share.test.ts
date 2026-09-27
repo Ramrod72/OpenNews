@@ -22,6 +22,42 @@ describe("getStoryUrl", () => {
       "http://localhost:3000/story/example-story-slug",
     );
   });
+
+  it("is a no-op for every real slug shape slugify() actually produces ([a-z0-9-]+)", () => {
+    expect(getStoryUrl("markets-react-to-policy-shift-ab12cd", "https://veriqen.example.com")).toBe(
+      "https://veriqen.example.com/story/markets-react-to-policy-shift-ab12cd",
+    );
+  });
+
+  describe("hostile slug input never escapes the /story/ path segment", () => {
+    const site = "https://veriqen.example.com";
+    const hostileSlugs = [
+      "a b",
+      "a#b",
+      "a?b",
+      "a%b",
+      `a"b'c`,
+      "café-résumé-😀",
+      "a/b",
+      "../../etc/passwd",
+      "..%2F..%2Fetc%2Fpasswd",
+    ];
+
+    for (const slug of hostileSlugs) {
+      it(`slug ${JSON.stringify(slug)} stays entirely within the path, with no query/fragment/origin escape`, () => {
+        const result = getStoryUrl(slug, site);
+        const url = new URL(result);
+        expect(url.origin).toBe(site);
+        expect(url.search).toBe("");
+        expect(url.hash).toBe("");
+        expect(url.pathname.startsWith("/story/")).toBe(true);
+        // Decoding the path segment recovers the exact original slug —
+        // proof nothing was silently dropped, merged into another
+        // component, or left partially unencoded.
+        expect(decodeURIComponent(url.pathname.slice("/story/".length))).toBe(slug);
+      });
+    }
+  });
 });
 
 describe("share URL builders — safe encoding and destination correctness", () => {
@@ -95,6 +131,60 @@ describe("special-character / encoding safety", () => {
     const result = buildXShareUrl({ url: STORY_URL, title });
     const params = new URL(result).searchParams;
     expect(params.get("text")).toBe(title);
+  });
+
+  it("a title crafted to look like extra query params (&, =) can never inject a new parameter into X's share URL", () => {
+    const injectionTitle = `Normal headline&url=https://evil.example.com&extra=1`;
+    const params = new URL(buildXShareUrl({ url: STORY_URL, title: injectionTitle })).searchParams;
+    expect([...params.keys()].sort()).toEqual(["text", "url"]);
+    expect(params.get("url")).toBe(STORY_URL);
+    expect(params.get("text")).toBe(injectionTitle);
+  });
+
+  it("a title crafted to look like extra query params can never inject a new parameter into Reddit's share URL", () => {
+    const injectionTitle = `Normal headline&url=https://evil.example.com&extra=1`;
+    const params = new URL(buildRedditShareUrl({ url: STORY_URL, title: injectionTitle }))
+      .searchParams;
+    expect([...params.keys()].sort()).toEqual(["title", "url"]);
+    expect(params.get("url")).toBe(STORY_URL);
+    expect(params.get("title")).toBe(injectionTitle);
+  });
+
+  it("a title crafted to look like extra query params can never inject a second url into WhatsApp's single text field", () => {
+    const injectionTitle = `Normal headline&url=https://evil.example.com&extra=1`;
+    const params = new URL(buildWhatsAppShareUrl({ url: STORY_URL, title: injectionTitle }))
+      .searchParams;
+    expect([...params.keys()]).toEqual(["text"]);
+    expect(params.get("text")).toBe(`${injectionTitle} ${STORY_URL}`);
+  });
+
+  it("a title containing = does not create extra query parameters when parsed", () => {
+    const title = "50% off? really = yes";
+    const result = buildXShareUrl({ url: STORY_URL, title });
+    const params = new URL(result).searchParams;
+    expect([...params.keys()].sort()).toEqual(["text", "url"]);
+    expect(params.get("text")).toBe(title);
+  });
+
+  it("a title that is itself a URL is carried as inert text, not treated as a second link", () => {
+    const title = "See https://not-veriqen.example.com/fake for details";
+    const result = buildRedditShareUrl({ url: STORY_URL, title });
+    const params = new URL(result).searchParams;
+    expect(params.get("title")).toBe(title);
+    expect(params.get("url")).toBe(STORY_URL);
+  });
+
+  it("no builder ever double-encodes the story URL (single encoding pass only)", () => {
+    for (const result of [
+      buildXShareUrl({ url: STORY_URL, title: "t" }),
+      buildFacebookShareUrl({ url: STORY_URL }),
+      buildRedditShareUrl({ url: STORY_URL, title: "t" }),
+      buildLinkedInShareUrl({ url: STORY_URL }),
+    ]) {
+      // A double-encoded URL would contain a literal "%25" (an encoded
+      // "%" from re-encoding the first pass's own "%3A"/"%2F" etc).
+      expect(result).not.toContain("%25");
+    }
   });
 });
 

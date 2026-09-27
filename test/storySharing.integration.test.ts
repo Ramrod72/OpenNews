@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/db";
 import { getStoryUrl } from "@/lib/share";
 import { generateMetadata } from "@/app/story/[slug]/page";
@@ -17,6 +17,14 @@ afterAll(async () => {
   await prisma.storyCluster.deleteMany({ where: { id: { in: clusterIds } } });
   await prisma.category.delete({ where: { id: categoryId } });
   await prisma.$disconnect();
+});
+
+// Restores any vi.spyOn from the "no extra query" test even if its own
+// assertion throws before reaching an explicit mockRestore() — a spy left
+// attached wouldn't break correctness (it still forwards to the real
+// implementation), but there's no reason to depend on that.
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 interface ClusterOverrides {
@@ -140,5 +148,33 @@ describe("generateMetadata for /story/[slug]", () => {
     const url = metadata.alternates?.canonical as string;
     expect(url).toContain(`/story/${cluster.slug}`);
     expect(url).not.toMatch(/^https?:\/\/(?!.*veriqen)(?!.*localhost).*$/i);
+  });
+
+  it("openGraph.url is always exactly the same value as the canonical link — never a different, drifting URL", async () => {
+    const cluster = await createCluster();
+    const metadata = await generateMetadata({ params: Promise.resolve({ slug: cluster.slug }) });
+
+    expect(asRecord(metadata.openGraph)?.url).toBe(metadata.alternates?.canonical);
+  });
+
+  it("handles a very long headline without truncating, crashing, or otherwise mangling it", async () => {
+    const longHeadline = "Breaking: " + "a very significant development ".repeat(50).trim();
+    const cluster = await createCluster({ headline: longHeadline });
+    const metadata = await generateMetadata({ params: Promise.resolve({ slug: cluster.slug }) });
+
+    expect(metadata.title).toBe(longHeadline);
+    expect(asRecord(metadata.openGraph)?.title).toBe(longHeadline);
+    expect(asRecord(metadata.twitter)?.title).toBe(longHeadline);
+  });
+
+  it("generateMetadata performs exactly one StoryCluster lookup — no extra query was introduced for the new metadata fields", async () => {
+    const cluster = await createCluster();
+    const spy = vi.spyOn(prisma.storyCluster, "findUnique");
+    spy.mockClear();
+
+    await generateMetadata({ params: Promise.resolve({ slug: cluster.slug }) });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

@@ -6,9 +6,17 @@ import { getSiteUrl } from "./siteUrl";
  * never a publisher/article URL. Kept as a plain function (not baked into
  * a component) so both `generateMetadata` and the share UI compute the
  * exact same value from the exact same source.
+ *
+ * `slug` is percent-encoded as a single path segment before use. Every
+ * real slug already comes from `slugify()` (src/lib/slug.ts), which only
+ * ever produces `[a-z0-9-]+`, so this is a no-op for actual data — it's
+ * defense in depth against a slug that somehow contains `/`, `?`, `#`,
+ * spaces, or other characters that would otherwise let it spill out of
+ * the intended `/story/` path segment into the query string, the
+ * fragment, or a different path entirely.
  */
 export function getStoryUrl(slug: string, siteUrl: string = getSiteUrl()): string {
-  return `${siteUrl}/story/${slug}`;
+  return `${siteUrl}/story/${encodeURIComponent(slug)}`;
 }
 
 export interface ShareTarget {
