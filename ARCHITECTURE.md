@@ -199,6 +199,43 @@ in one seedable table (`config/plans.json` → `prisma/seedPlans.ts`)
 instead of scattered `user.plan === "pro"` checks. An unrecognized feature
 key resolves to "no access" (fails closed), not "unlimited."
 
+## Pricing UI (`src/lib/pricingContent.ts`, `src/lib/pricing.ts`, `/pricing`)
+
+The `/pricing` page and the account page's plan summary both read from
+the same two layers, and neither hardcodes a plan's price, limits, or
+feature set:
+
+- `src/lib/pricing.ts` — DB-aware (`getPricingView`, `getAccountPlanSummary`),
+  reading plans/entitlements straight from Prisma and resolving the current
+  user's plan via `getPlan()` (Phase 3's entitlements module), never a
+  scattered `user.plan === "pro"` check. No `next/headers` import, so —
+  like `entitlements.ts` and consumer auth's `session.ts` — it's testable
+  against a real database with no request-scope mocking.
+- `src/lib/pricingContent.ts` — pure marketing copy, keyed by entitlement
+  feature key: a label and a `"live" | "planned"` status per feature. It
+  never asserts whether a plan _has_ a feature (that's always the real
+  `boolValue`/`limitValue` passed in); it only supplies how to describe it
+  and whether the underlying product feature actually exists yet. Since
+  almost none of Basic/Pro's differentiators are wired into live app
+  behavior yet (no page currently calls `can()`/`checkUsage()` for them —
+  see the Consumer accounts section above), most of what these two plans
+  list is honestly tagged "Coming soon" in the UI rather than implied to
+  already work.
+- A plan's card only shows what's _new_ since the next-cheapest plan
+  (`buildNewHighlights`, a diff over each entry's resolved label between
+  two plans' entitlement maps) under an "Everything in Free/Basic, plus:"
+  header, so upgrading isn't a full restatement of the cheaper tier. The
+  comparison table (`buildComparisonRows`) instead shows every plan's
+  value for every entry side by side.
+- No endpoint anywhere lets a client set its own plan — `registerUser`
+  (Phase 3) is the only code that ever creates a `Subscription`, and it's
+  hardcoded to the Free plan. The account page's `UpgradeButton` never
+  calls an API; clicking it only reveals text explaining that billing
+  isn't configured, and is shared between `/pricing` and `/account` so
+  that message is defined once. `test/pricingNavigationAndSafety.test.ts`
+  guards this by scanning `src/app/api` for anything that writes to
+  subscription/plan state.
+
 ## Ads (`src/components/ads/`)
 
 `AdSlot` is provider-agnostic: with nothing configured it renders a
