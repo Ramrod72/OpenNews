@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { Flame, Bookmark, Newspaper, UserCircle } from "lucide-react";
+import { Flame, Bookmark, Newspaper, Tag, UserCircle } from "lucide-react";
 import { listCategories } from "@/lib/stories";
 import { SearchBar } from "./SearchBar";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
@@ -22,6 +22,12 @@ export async function Header() {
         </Suspense>
 
         <div className="ml-auto flex items-center gap-2">
+          <Link
+            href="/pricing"
+            className="hidden items-center gap-1 rounded-full px-3 py-1.5 text-sm font-medium text-foreground-muted hover:bg-surface-muted hover:text-foreground md:flex"
+          >
+            <Tag size={15} /> Pricing
+          </Link>
           <Link
             href="/breaking"
             className="hidden items-center gap-1 rounded-full px-3 py-1.5 text-sm font-semibold text-breaking hover:bg-surface-muted sm:flex"

@@ -180,6 +180,16 @@ scattered through route handlers, and an unrecognized feature key fails
 closed (no access), not open (unlimited) — a typo in a feature key can
 only ever take access away, never accidentally grant it.
 
+**No self-service plan changes.** `/pricing` and the account page's
+"Upgrade" buttons never call an API — there's no endpoint anywhere that
+lets an authenticated user (or anyone else) set their own `Subscription`.
+The only code that ever creates one is `registerUser` (Phase 3), which
+always assigns the Free plan; there is no corresponding "update my plan"
+handler for a client to call instead. `test/pricingNavigationAndSafety.test.ts`
+guards this with a structural scan of every file under `src/app/api` for
+subscription-mutating code, so a future PR that adds a naive, unauthenticated
+"upgrade" endpoint fails CI rather than shipping.
+
 ## Dependency scanning
 
 `npm audit` is not run in CI by default; run it locally before releases.
