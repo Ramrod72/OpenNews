@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useAdEligibility } from "./AdEligibilityProvider";
+import { shouldRenderAds } from "./shouldRenderAds";
 
 export type AdSlotSize = "leaderboard" | "rectangle" | "in-feed" | "sidebar";
 
@@ -29,12 +31,21 @@ const SIZE_CLASSES: Record<AdSlotSize, string> = {
  * snippet into Admin → Advertising, this mounts it for real — including
  * re-creating any <script> tags so they actually execute (setting HTML via
  * innerHTML does not run embedded scripts).
+ *
+ * `enabled` here is only the admin's global/per-slot toggle (from
+ * AdContainer). Whether THIS viewer's plan allows ads at all is a
+ * separate, per-viewer check (useAdEligibility(), Phase 5) — both must be
+ * true (shouldRenderAds) before anything renders, including the
+ * placeholder: a Basic/Pro viewer gets no ad-shaped UI at all, not just a
+ * hidden or empty one.
  */
 export function AdSlot({ name, size = "rectangle", enabled, code, className }: AdSlotProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewerAllowsAds = useAdEligibility();
+  const active = shouldRenderAds(enabled, viewerAllowsAds);
 
   useEffect(() => {
-    if (!enabled || !code || !containerRef.current) return;
+    if (!active || !code || !containerRef.current) return;
     const container = containerRef.current;
     container.innerHTML = "";
 
@@ -58,9 +69,11 @@ export function AdSlot({ name, size = "rectangle", enabled, code, className }: A
     return () => {
       container.innerHTML = "";
     };
-  }, [enabled, code]);
+  }, [active, code]);
 
-  if (!enabled || !code) {
+  if (!active) return null;
+
+  if (!code) {
     return (
       <div
         role="complementary"

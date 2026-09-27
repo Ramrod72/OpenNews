@@ -190,6 +190,28 @@ guards this with a structural scan of every file under `src/app/api` for
 subscription-mutating code, so a future PR that adds a naive, unauthenticated
 "upgrade" endpoint fails CI rather than shipping.
 
+**Plan-aware advertising (Phase 5).** Basic/Pro's "no ads" entitlement is
+enforced as an actual absence, not a CSS hide: `AdSlot`/`AdHeadSnippet`
+never inject the ad network's HTML/script into the DOM for a viewer whose
+plan doesn't allow ads (`can(userId, "ads_enabled")`, the same centralized
+entitlement check used everywhere else — never a hardcoded plan-slug
+comparison), so a paying subscriber's browser never downloads or executes
+third-party ad-provider JavaScript through Veriqen, and the ad network's
+own head-loader script (`AdHeadSnippet`) is gated the same way — not just
+the visible per-slot placements. `/api/ads/eligibility` (the endpoint the
+client checks this against) returns only a boolean, never the viewer's
+email, user id, or plan name, so nothing new is exposed to the browser
+beyond what ad-gating itself requires, and — as always — nothing about
+the viewer is templated into an ad snippet before it's injected, so no
+personal information reaches an ad provider through this mechanism.
+Failure handling is asymmetric on purpose: an anonymous visitor (no
+session cookie) keeps normal Free behavior even during a failure, while an
+authenticated visitor whose plan can't be resolved (e.g. a database
+outage) fails closed (no ads), since they might be paying and the
+consequence of guessing wrong differs — see ARCHITECTURE.md for the full
+reasoning and `test/adEligibility.integration.test.ts` for the regression
+coverage of both directions.
+
 ## Dependency scanning
 
 `npm audit` is not run in CI by default; run it locally before releases.
