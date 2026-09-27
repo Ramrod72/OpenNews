@@ -141,6 +141,15 @@ At minimum you need `SESSION_SECRET` and either `ADMIN_PASSWORD_HASH`
 (recommended) or `ADMIN_PASSWORD` (local dev only) to use the admin panel;
 everything else has a working default.
 
+### Site URL
+
+Set `NEXT_PUBLIC_SITE_URL` to your public origin (e.g.
+`https://your-domain.example`, the same domain used in the reverse-proxy
+example above) so canonical links, Open Graph/Twitter card previews, and
+story share links point at the right place. Without it, these fall back
+to `http://localhost:3000`, which is fine for local development but wrong
+for anything users will actually see — set it before going live.
+
 ## Monitoring
 
 - `GET /api/health` — checks the database is reachable; used by the Docker

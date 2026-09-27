@@ -6,6 +6,7 @@ import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { AdHeadSnippet } from "@/components/ads/AdHeadSnippet";
 import { AdEligibilityProvider } from "@/components/ads/AdEligibilityProvider";
+import { getSiteUrl } from "@/lib/siteUrl";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -18,6 +19,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(getSiteUrl()),
   title: {
     default: "Veriqen — Open-source news aggregator",
     template: "%s · Veriqen",

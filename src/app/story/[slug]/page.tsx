@@ -5,6 +5,7 @@ import type { Metadata } from "next";
 import { ExternalLink, Clock, Layers, Sparkles } from "lucide-react";
 import { getStoryClusterBySlug, getRelatedClusters } from "@/lib/stories";
 import { relativeTime, absoluteTime, shortTime } from "@/lib/format";
+import { getStoryUrl } from "@/lib/share";
 import {
   classifyPerspective,
   PERSPECTIVE_DESCRIPTIONS,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/perspective";
 import { BreakingBadge, CategoryBadge } from "@/components/ui/CategoryBadge";
 import { BookmarkButton } from "@/components/story/BookmarkButton";
+import { ShareButton } from "@/components/story/ShareButton";
 import { StoryCard } from "@/components/story/StoryCard";
 import { AdContainer } from "@/components/ads/AdContainer";
 
@@ -26,9 +28,31 @@ export async function generateMetadata({
   const { slug } = await params;
   const cluster = await getStoryClusterBySlug(slug);
   if (!cluster) return { title: "Story not found" };
+
+  // Never fabricate a description when there's no useful summary — an
+  // empty/whitespace-only summary is treated the same as none at all,
+  // for the plain description and for Open Graph/Twitter alike.
+  const description = cluster.summary?.trim() ? cluster.summary : undefined;
+  const url = getStoryUrl(cluster.slug);
+  const images = cluster.imageUrl ? [cluster.imageUrl] : undefined;
+
   return {
     title: cluster.headline,
-    description: cluster.summary ?? undefined,
+    description,
+    alternates: { canonical: url },
+    openGraph: {
+      title: cluster.headline,
+      description,
+      url,
+      type: "article",
+      images,
+    },
+    twitter: {
+      card: cluster.imageUrl ? "summary_large_image" : "summary",
+      title: cluster.headline,
+      description,
+      images,
+    },
   };
 }
 
@@ -37,6 +61,7 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
   const cluster = await getStoryClusterBySlug(slug);
   if (!cluster) notFound();
 
+  const storyUrl = getStoryUrl(cluster.slug);
   const related = await getRelatedClusters(cluster, 6);
   const timeline = [...cluster.articles].sort(
     (a, b) => a.publishedAt.getTime() - b.publishedAt.getTime(),
@@ -139,6 +164,7 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
             categoryName={cluster.category?.name ?? null}
             imageUrl={cluster.imageUrl}
           />
+          <ShareButton url={storyUrl} title={cluster.headline} />
         </div>
 
         {byPerspective.size > 1 && (
