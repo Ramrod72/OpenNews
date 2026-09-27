@@ -247,6 +247,83 @@ Content-Security-Policy (`next.config.ts`) only allows same-origin scripts,
 so an admin enabling a real ad network will also need to widen `script-src`
 there for that network's domain — documented in the Admin → Settings UI.
 
+**Plan-aware ad gating (Phase 5).** Whether an ad renders at all is
+`globalAdsEnabled AND viewerEntitlementAllowsAds` (`shouldRenderAds()` in
+`src/components/ads/shouldRenderAds.ts`) — both AdSlot and AdHeadSnippet
+compute it the same way, and neither ever compares a plan slug directly;
+the viewer half comes from the same centralized `can(userId, "ads_enabled")`
+entitlement check used everywhere else (Phase 3), so anonymous visitors
+automatically resolve to the Free plan's value.
+
+The tricky part is _where_ that viewer check happens. `AdContainer` is a
+server component embedded directly in pages that use ISR
+(`homepage`/`category`/`story` all set `revalidate = 60`) — if it read the
+viewer's session, the cached HTML generated for whichever visitor happens
+to trigger a background regeneration would leak into every other
+visitor's page for up to 60 seconds (a Free visitor's request could bake
+"show ads" into the shared cache a Pro visitor then receives, or vice
+versa). So `AdContainer` doesn't resolve _anything_ server-side any more —
+not even the admin's global/per-slot config. It's a thin, static wrapper
+that only tells `AdSlot` which named slot to render; both the admin
+config and the viewer decision come from `AdEligibilityProvider`
+(mounted once in the root layout), which fetches `GET /api/ads/eligibility`
+— a route handler that reads the session cookie, but as its own endpoint
+was already fully dynamic/per-request, nothing about it is cached — and
+shares the result via context to every `AdSlot`/`AdHeadSnippet` on the
+page. This keeps the ISR pages' caching behavior completely unchanged
+(confirmed by `npm run build`'s route table still showing `/` etc. as
+static with the same revalidate windows) while still making the ad
+decision correct per viewer.
+
+That endpoint's response is deliberately asymmetric:
+`{ adsAllowed: false }` when the viewer's plan doesn't allow ads, or
+`{ adsAllowed: true, settings: AdSettings }` — the actual admin
+configuration, every slot's code included — only when it does. This
+matters beyond just _rendering_ correctly: an earlier version of this
+endpoint returned only the boolean and had `AdContainer` pass the ad
+network's raw snippet text down as an ordinary prop regardless of viewer
+(needed for the client components to hydrate with it) — which meant a
+Basic/Pro browser still _received_ that snippet over the network as part
+of the page payload, even though it was confirmed to never execute.
+Verified directly: fetching the homepage's raw HTML as a Basic-plan
+viewer with `curl` (i.e. before any client JS runs) showed the configured
+ad network's URL literally present in the page source. Moving the actual
+settings fetch behind the same eligibility gate closes that: an
+ineligible viewer's browser now never receives the ad configuration at
+all, not just never renders or executes it.
+
+`AdEligibilityProvider`'s `adsAllowed` is `boolean | null` — `null` while
+the fetch hasn't resolved yet, and `settings` is `null` until `adsAllowed`
+is `true` — and both ad components treat `null` the same as `false`:
+nothing renders, not even the placeholder, until eligibility is
+confirmed. Optimistically rendering while pending would mean briefly
+mounting a real ad script before knowing the viewer is a paying
+subscriber, which is exactly what the "Basic/Pro never see ads" guarantee
+rules out. The cost is a Free/anonymous visitor's ad slot appearing a
+beat after the rest of the page (one same-origin fetch) instead of
+instantly — a normal, unremarkable delay for lazy-loaded ads.
+
+**Failure behavior.** `resolveViewerAdEligibility()` (`src/lib/ads.ts`)
+fails safely in two different directions depending on who's asking: an
+anonymous visitor (no session cookie at all — checked directly in
+`/api/ads/eligibility` before any database call) keeps normal Free
+behavior even if something else is broken, since there's no paid promise
+to protect for someone who was never signed in; an authenticated visitor
+whose plan can't be resolved (e.g. a database outage) fails **closed** —
+no ads — since they might be a paying subscriber and an unexpected error
+must never accidentally show them ads. A missing/unrecognized
+`ads_enabled` entitlement row behaves the same way, for the same reason
+(`can()`'s existing fail-closed default, Phase 3).
+
+**Privacy.** `/api/ads/eligibility` never returns email, user id, plan
+name, subscription id, or anything about the viewer beyond the
+`adsAllowed` boolean itself — the `settings` it conditionally includes is
+pure admin configuration (ad network snippets, on/off toggles), the same
+for every eligible viewer, never templated with anything viewer-specific.
+Nothing about a viewer is ever templated into an ad snippet/script before
+injection either. No personal information reaches an ad provider through
+Veriqen.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate

@@ -5,7 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { AdHeadSnippet } from "@/components/ads/AdHeadSnippet";
-import { getAdSettings } from "@/lib/ads";
+import { AdEligibilityProvider } from "@/components/ads/AdEligibilityProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -27,8 +27,6 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const adSettings = await getAdSettings();
-
   return (
     <html
       lang="en"
@@ -37,18 +35,20 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     >
       <body className="flex min-h-full flex-col bg-background text-foreground">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <a
-            href="#main-content"
-            className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-accent focus:px-3 focus:py-2 focus:text-accent-foreground"
-          >
-            Skip to content
-          </a>
-          <Header />
-          <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
-            {children}
-          </main>
-          <Footer />
-          <AdHeadSnippet enabled={adSettings.enabled} snippet={adSettings.headSnippet} />
+          <AdEligibilityProvider>
+            <a
+              href="#main-content"
+              className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-accent focus:px-3 focus:py-2 focus:text-accent-foreground"
+            >
+              Skip to content
+            </a>
+            <Header />
+            <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
+              {children}
+            </main>
+            <Footer />
+            <AdHeadSnippet />
+          </AdEligibilityProvider>
         </ThemeProvider>
       </body>
     </html>
