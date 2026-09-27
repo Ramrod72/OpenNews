@@ -1,18 +1,18 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useAdEligibility } from "./AdEligibilityProvider";
+import { useAdConfig } from "./AdEligibilityProvider";
 import { shouldRenderAds } from "./shouldRenderAds";
 
 export type AdSlotSize = "leaderboard" | "rectangle" | "in-feed" | "sidebar";
+export type AdSlotKey =
+  "homepageFeed" | "sidebar" | "betweenStories" | "articlePage" | "mobileFeed";
 
 interface AdSlotProps {
   /** Label shown in dev/placeholder state, e.g. "Sidebar" or "Between stories" */
   name: string;
   size?: AdSlotSize;
-  enabled: boolean;
-  /** Raw ad network HTML/JS snippet, configured by an administrator. */
-  code: string;
+  slot: AdSlotKey;
   className?: string;
 }
 
@@ -32,17 +32,26 @@ const SIZE_CLASSES: Record<AdSlotSize, string> = {
  * re-creating any <script> tags so they actually execute (setting HTML via
  * innerHTML does not run embedded scripts).
  *
- * `enabled` here is only the admin's global/per-slot toggle (from
- * AdContainer). Whether THIS viewer's plan allows ads at all is a
- * separate, per-viewer check (useAdEligibility(), Phase 5) — both must be
- * true (shouldRenderAds) before anything renders, including the
- * placeholder: a Basic/Pro viewer gets no ad-shaped UI at all, not just a
- * hidden or empty one.
+ * The admin's global/per-slot toggle AND the actual ad code both come
+ * from useAdConfig() (Phase 5) — never as props from a server component,
+ * and never present at all unless this viewer's plan allows ads. That's
+ * deliberate: AdContainer sits inside pages that use ISR caching, so it
+ * can't know the viewer per-request without leaking one visitor's ad
+ * state into the shared cache (see ARCHITECTURE.md). A Basic/Pro viewer
+ * gets no ad-shaped UI at all — not just a hidden one, and not merely an
+ * un-executed one: the ad network's snippet/script text is never even
+ * sent to their browser in the first place.
  */
-export function AdSlot({ name, size = "rectangle", enabled, code, className }: AdSlotProps) {
+export function AdSlot({ name, size = "rectangle", slot, className }: AdSlotProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const viewerAllowsAds = useAdEligibility();
-  const active = shouldRenderAds(enabled, viewerAllowsAds);
+  const { adsAllowed, settings } = useAdConfig();
+  const slotConfig = settings?.slots[slot];
+  const code = slotConfig?.code ?? "";
+  const active = shouldRenderAds(
+    adsAllowed,
+    Boolean(settings?.enabled),
+    Boolean(slotConfig?.enabled),
+  );
 
   useEffect(() => {
     if (!active || !code || !containerRef.current) return;

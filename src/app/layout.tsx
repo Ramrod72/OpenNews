@@ -6,7 +6,6 @@ import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { AdHeadSnippet } from "@/components/ads/AdHeadSnippet";
 import { AdEligibilityProvider } from "@/components/ads/AdEligibilityProvider";
-import { getAdSettings } from "@/lib/ads";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,8 +27,6 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const adSettings = await getAdSettings();
-
   return (
     <html
       lang="en"
@@ -50,7 +47,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               {children}
             </main>
             <Footer />
-            <AdHeadSnippet enabled={adSettings.enabled} snippet={adSettings.headSnippet} />
+            <AdHeadSnippet />
           </AdEligibilityProvider>
         </ThemeProvider>
       </body>

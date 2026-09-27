@@ -1,21 +1,24 @@
 "use client";
 
 import { useEffect } from "react";
-import { useAdEligibility } from "./AdEligibilityProvider";
+import { useAdConfig } from "./AdEligibilityProvider";
 import { shouldRenderAds } from "./shouldRenderAds";
 
 /**
  * Mounts an admin-configured ad network loader script (e.g. an AdSense
  * head tag) once, site-wide — but only for viewers whose plan allows ads
- * at all (Phase 5). Without this check, a paid viewer would still have
- * the ad network's own loader script fetched and executed globally via
- * this component even though AdSlot renders nothing for them, defeating
- * the "no ads" guarantee for anything that script does on its own
- * (tracking pixels, auto-inserted units, etc.).
+ * at all (Phase 5), and takes no props: the snippet text itself comes
+ * from useAdConfig(), which never carries it at all unless this viewer is
+ * eligible (see /api/ads/eligibility). Without this, a paid viewer's
+ * browser would still have received (and, before this fix, executed) the
+ * ad network's own loader script globally, even though AdSlot showed them
+ * nothing — defeating the "no ads" guarantee for anything that script
+ * does on its own (tracking pixels, auto-inserted units, etc.).
  */
-export function AdHeadSnippet({ enabled, snippet }: { enabled: boolean; snippet: string }) {
-  const viewerAllowsAds = useAdEligibility();
-  const active = shouldRenderAds(enabled, viewerAllowsAds);
+export function AdHeadSnippet() {
+  const { adsAllowed, settings } = useAdConfig();
+  const snippet = settings?.headSnippet ?? "";
+  const active = shouldRenderAds(adsAllowed, Boolean(settings?.enabled), true);
 
   useEffect(() => {
     if (!active || !snippet.trim()) return;

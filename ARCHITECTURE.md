@@ -262,22 +262,41 @@ viewer's session, the cached HTML generated for whichever visitor happens
 to trigger a background regeneration would leak into every other
 visitor's page for up to 60 seconds (a Free visitor's request could bake
 "show ads" into the shared cache a Pro visitor then receives, or vice
-versa). So `AdContainer` still only resolves the admin's global/per-slot
-config (viewer-independent, safe to cache) exactly as before Phase 5. The
-viewer-specific half is resolved entirely client-side: `AdEligibilityProvider`
-(mounted once in the root layout) fetches `GET /api/ads/eligibility` —
-which does read the session cookie, but as its own route handler it was
-already fully dynamic/per-request, nothing about it is cached — and shares
-the resulting boolean via context to every `AdSlot`/`AdHeadSnippet` on the
+versa). So `AdContainer` doesn't resolve _anything_ server-side any more —
+not even the admin's global/per-slot config. It's a thin, static wrapper
+that only tells `AdSlot` which named slot to render; both the admin
+config and the viewer decision come from `AdEligibilityProvider`
+(mounted once in the root layout), which fetches `GET /api/ads/eligibility`
+— a route handler that reads the session cookie, but as its own endpoint
+was already fully dynamic/per-request, nothing about it is cached — and
+shares the result via context to every `AdSlot`/`AdHeadSnippet` on the
 page. This keeps the ISR pages' caching behavior completely unchanged
 (confirmed by `npm run build`'s route table still showing `/` etc. as
 static with the same revalidate windows) while still making the ad
 decision correct per viewer.
 
-`AdEligibilityProvider`'s value is `boolean | null` — `null` while the
-fetch hasn't resolved yet — and both ad components treat `null` the same
-as `false`: nothing renders, not even the placeholder, until eligibility
-is confirmed. Optimistically rendering while pending would mean briefly
+That endpoint's response is deliberately asymmetric:
+`{ adsAllowed: false }` when the viewer's plan doesn't allow ads, or
+`{ adsAllowed: true, settings: AdSettings }` — the actual admin
+configuration, every slot's code included — only when it does. This
+matters beyond just _rendering_ correctly: an earlier version of this
+endpoint returned only the boolean and had `AdContainer` pass the ad
+network's raw snippet text down as an ordinary prop regardless of viewer
+(needed for the client components to hydrate with it) — which meant a
+Basic/Pro browser still _received_ that snippet over the network as part
+of the page payload, even though it was confirmed to never execute.
+Verified directly: fetching the homepage's raw HTML as a Basic-plan
+viewer with `curl` (i.e. before any client JS runs) showed the configured
+ad network's URL literally present in the page source. Moving the actual
+settings fetch behind the same eligibility gate closes that: an
+ineligible viewer's browser now never receives the ad configuration at
+all, not just never renders or executes it.
+
+`AdEligibilityProvider`'s `adsAllowed` is `boolean | null` — `null` while
+the fetch hasn't resolved yet, and `settings` is `null` until `adsAllowed`
+is `true` — and both ad components treat `null` the same as `false`:
+nothing renders, not even the placeholder, until eligibility is
+confirmed. Optimistically rendering while pending would mean briefly
 mounting a real ad script before knowing the viewer is a paying
 subscriber, which is exactly what the "Basic/Pro never see ads" guarantee
 rules out. The cost is a Free/anonymous visitor's ad slot appearing a
@@ -296,10 +315,14 @@ must never accidentally show them ads. A missing/unrecognized
 `ads_enabled` entitlement row behaves the same way, for the same reason
 (`can()`'s existing fail-closed default, Phase 3).
 
-**Privacy.** `/api/ads/eligibility` returns only `{ adsAllowed: boolean }`
-— never email, user id, plan name, or anything else — and nothing about a
-viewer is ever templated into an ad snippet/script before injection. No
-personal information reaches an ad provider through Veriqen.
+**Privacy.** `/api/ads/eligibility` never returns email, user id, plan
+name, subscription id, or anything about the viewer beyond the
+`adsAllowed` boolean itself — the `settings` it conditionally includes is
+pure admin configuration (ad network snippets, on/off toggles), the same
+for every eligible viewer, never templated with anything viewer-specific.
+Nothing about a viewer is ever templated into an ad snippet/script before
+injection either. No personal information reaches an ad provider through
+Veriqen.
 
 ## Known limitations / natural next steps
 

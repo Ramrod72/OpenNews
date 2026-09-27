@@ -198,12 +198,24 @@ entitlement check used everywhere else — never a hardcoded plan-slug
 comparison), so a paying subscriber's browser never downloads or executes
 third-party ad-provider JavaScript through Veriqen, and the ad network's
 own head-loader script (`AdHeadSnippet`) is gated the same way — not just
-the visible per-slot placements. `/api/ads/eligibility` (the endpoint the
-client checks this against) returns only a boolean, never the viewer's
-email, user id, or plan name, so nothing new is exposed to the browser
-beyond what ad-gating itself requires, and — as always — nothing about
-the viewer is templated into an ad snippet before it's injected, so no
-personal information reaches an ad provider through this mechanism.
+the visible per-slot placements. This goes one step further than "never
+executes": `/api/ads/eligibility` withholds the ad configuration itself
+(every slot's code, the head snippet) from an ineligible viewer's
+response entirely — `{ adsAllowed: false }` and nothing else — so a
+Basic/Pro browser never _receives_ the ad network's snippet text over the
+network in the first place, not just never renders or runs it. An earlier
+version of this endpoint returned only the eligibility boolean while the
+actual snippet text was still passed down unconditionally as a prop for
+every viewer (needed for the client ad components to hydrate); an
+adversarial review caught this by fetching the homepage's raw HTML as a
+Basic-plan viewer with `curl` and finding the configured ad network's URL
+present in the server-rendered page source despite it never executing.
+Fixed by moving the settings fetch itself behind the same eligibility
+gate. The endpoint returns only a boolean, never the viewer's email, user
+id, plan name, or subscription id, so nothing new is exposed to the
+browser beyond what ad-gating itself requires, and — as always — nothing
+about the viewer is templated into an ad snippet before it's injected, so
+no personal information reaches an ad provider through this mechanism.
 Failure handling is asymmetric on purpose: an anonymous visitor (no
 session cookie) keeps normal Free behavior even during a failure, while an
 authenticated visitor whose plan can't be resolved (e.g. a database
