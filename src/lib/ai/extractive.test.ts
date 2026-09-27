@@ -37,6 +37,12 @@ function makeArticle(
       consecutiveFailures: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
+      description: null,
+      sourceType: null,
+      country: null,
+      ownership: null,
+      foundedYear: null,
+      profileUpdatedAt: null,
     },
     ...overrides,
   };

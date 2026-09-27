@@ -30,6 +30,12 @@ What's in scope:
   through it; privilege escalation between the Free/Basic/Pro plans;
   cross-site request forgery against consumer account actions; consumer
   and admin auth interfering with or being mistaken for each other.
+- Unauthorized creation/modification/deletion of source-profile metadata
+  or external assessments; cross-source tampering (editing/deleting an
+  assessment via an id that belongs to a different source); unsafe
+  content (HTML/script) stored in admin-entered profile or assessment
+  fields; Veriqen presenting a third party's rating as its own
+  determination, or as a source's without disclosing who made it.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -223,6 +229,48 @@ outage) fails closed (no ads), since they might be paying and the
 consequence of guessing wrong differs — see ARCHITECTURE.md for the full
 reasoning and `test/adEligibility.integration.test.ts` for the regression
 coverage of both directions.
+
+**Source profiles and external assessments (Phase 6).** Every mutating
+route under `/api/admin/sources/[id]` — the existing profile-metadata
+`PATCH`, and the new assessment `POST`/`PATCH`/`DELETE` — calls
+`requireAdmin(req)` first, the same session-and-CSRF guard every other
+admin mutation uses; no new auth mechanism was introduced. Assessment
+`PATCH`/`DELETE` additionally scope their lookup by **both**
+`assessmentId` and `sourceId` (`findFirst({ where: { id: assessmentId,
+sourceId } })`) before mutating, so a request naming a real assessment id
+that belongs to a _different_ source 404s instead of silently editing
+the wrong source's data. Every free-text field an admin can enter
+(description, country, ownership, provider, rating value/scale, notes) is
+sanitized with the existing `toPlainText()` (the same function feed
+content is sanitized with) before being stored — defense in depth, since
+nothing in this feature renders these fields via `dangerouslySetInnerHTML`
+in the first place, and a structural test (`test/sourceProfileSafety.test.ts`)
+asserts none was introduced. Every URL a profile or assessment can carry
+(`homepageUrl`, `logoUrl`, `referenceUrl`) is validated with an http(s)-only
+Zod refinement (`httpUrl` in `src/lib/validation/sourceProfile.ts`),
+rejecting `javascript:`/`data:`/any other scheme before it's ever stored,
+so a reference link can't become a stored-XSS vector via `href`.
+
+The public `GET /api/sources/[id]` route requires no authentication (this
+data — publisher name, description, third-party ratings — is meant to be
+public, same as the existing `/api/sources` list) but its response is
+built from an explicit field allowlist (`toPublicSourceProfile()`), the
+same "serialize, don't return the raw Prisma row" pattern `serializeCluster()`
+already uses for stories — it never returns the feed URL, `active`, or any
+ingestion-health field (`fetchIntervalMinutes`, `lastFetchedAt`,
+`lastError`, `consecutiveFailures`, ...), and a regression test asserts
+this directly on the route's JSON response. An unknown source id 404s
+with a generic message; there is no distinct "id well-formed but not
+found" vs. "malformed id" response that would help enumerate valid ids.
+
+The external-assessment model has no field, computation, or code path that
+combines multiple providers' ratings into a single score — this is a
+deliberate design constraint, not an oversight, since averaging conflicting
+political-lean or credibility ratings would itself misrepresent both
+providers and let Veriqen's presentation imply a false precision or a
+determination Veriqen never made. Every assessment requires a non-empty
+`provider` at the schema level (`externalAssessmentSchema`), so there is
+no way, even for an admin, to store an anonymous/unattributed rating.
 
 ## Dependency scanning
 

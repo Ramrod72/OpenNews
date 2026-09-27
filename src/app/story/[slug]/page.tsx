@@ -218,7 +218,12 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
               return (
                 <div key={source.id} className="rounded-xl border border-border p-4">
                   <div className="mb-2 flex items-center justify-between">
-                    <p className="font-bold">{source.name}</p>
+                    <Link
+                      href={`/sources/${source.id}`}
+                      className="font-bold hover:text-accent hover:underline"
+                    >
+                      {source.name}
+                    </Link>
                     {source.homepageUrl && (
                       <a
                         href={source.homepageUrl}
