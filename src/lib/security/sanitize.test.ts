@@ -28,6 +28,15 @@ describe("toPlainText", () => {
     expect(toPlainText(undefined)).toBe("");
     expect(toPlainText(null)).toBe("");
   });
+
+  it("strips non-whitespace control characters (NUL and other C0/C1 codes), which are otherwise stored verbatim and can break a Postgres TEXT column", () => {
+    expect(toPlainText("before\u0000after")).toBe("beforeafter");
+    expect(toPlainText("a\u0001\u0007\u001fb\u007f\u009fc")).toBe("abc");
+  });
+
+  it("still collapses ordinary whitespace (tab/newline/CR) into a single space, not stripping it", () => {
+    expect(toPlainText("a\tb\nc\r\nd")).toBe("a b c d");
+  });
 });
 
 describe("excerpt", () => {

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
 import { toPlainText } from "@/lib/security/sanitize";
-import { SOURCE_TYPE_VALUES } from "@/lib/validation/sourceProfile";
+import { httpUrl, SOURCE_TYPE_VALUES } from "@/lib/validation/sourceProfile";
 
 const PROFILE_FIELDS = [
   "description",
@@ -16,13 +16,18 @@ const PROFILE_FIELDS = [
 const updateSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   url: z.string().url().optional(),
-  homepageUrl: z.string().url().optional().or(z.literal("")).optional(),
+  // http(s)-only (not a bare z.string().url(), which would also accept
+  // javascript:/data:/etc.) — homepageUrl is rendered as a clickable link
+  // on both the story page ("Visit site") and the Phase 6 source-profile
+  // page ("Visit website"), so an unsafe scheme here is a real,
+  // click-triggered XSS vector, not just a cosmetic issue.
+  homepageUrl: httpUrl.optional().or(z.literal("")).optional(),
   categorySlug: z.string().min(1).optional(),
   fetchIntervalMinutes: z.number().int().min(5).max(1440).optional(),
   active: z.boolean().optional(),
   // Phase 6: source-profile metadata. All optional — a source with only
   // the fields above continues to work exactly as before.
-  logoUrl: z.string().url().optional().or(z.literal("")).optional(),
+  logoUrl: httpUrl.optional().or(z.literal("")).optional(),
   description: z.string().trim().max(2000).optional().or(z.literal("")),
   sourceType: z.enum(SOURCE_TYPE_VALUES).optional().or(z.literal("")),
   country: z.string().trim().max(100).optional().or(z.literal("")),

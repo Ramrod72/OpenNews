@@ -16,7 +16,15 @@ export function toPlainText(input: string | undefined | null, maxLength = 4000):
     textFilter: (text) => text.replace(/\s+/g, " "),
   });
 
-  const decoded = decodeEntities(stripped).replace(/\s+/g, " ").trim();
+  const decoded = decodeEntities(stripped)
+    // Strip non-whitespace control characters (NUL and other C0/C1 codes) —
+    // \s already collapses tab/newline/CR into a space above, but a raw
+    // NUL byte in particular isn't whitespace and isn't valid in a
+    // Postgres TEXT column, so it must never reach storage even though
+    // SQLite (used in dev) silently accepts it.
+    .replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   return decoded.length > maxLength ? `${decoded.slice(0, maxLength - 1).trimEnd()}…` : decoded;
 }

@@ -58,12 +58,31 @@ export const ASSESSMENT_TYPE_LABELS: Record<AssessmentType, string> = {
 
 const CURRENT_YEAR = new Date().getFullYear();
 
-/** http(s)-only URL, consistent with safeImageUrl/assertPublicHttpUrl elsewhere. */
-const httpUrl = z
+/**
+ * http(s)-only URL, consistent with safeImageUrl/assertPublicHttpUrl
+ * elsewhere. Also rejects embedded userinfo (`https://user:pass@host` or
+ * `https://deceptive-looking-host@real-host`) — these fields are only ever
+ * rendered as a link (homepage/logo/reference), so there's no legitimate
+ * reason for one to carry credentials, and a userinfo segment is a classic
+ * way to make a URL's visible text/status-bar preview say one host while it
+ * actually navigates to another.
+ */
+export const httpUrl = z
   .string()
   .trim()
   .url()
-  .refine((url) => /^https?:\/\//i.test(url), { message: "Must be an http(s) URL" });
+  .refine((url) => /^https?:\/\//i.test(url), { message: "Must be an http(s) URL" })
+  .refine(
+    (url) => {
+      try {
+        const parsed = new URL(url);
+        return parsed.username === "" && parsed.password === "";
+      } catch {
+        return false;
+      }
+    },
+    { message: "URL must not contain embedded credentials" },
+  );
 
 /** An optional field that treats an empty string the same as "not provided". */
 function optionalText(max: number) {

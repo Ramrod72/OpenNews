@@ -77,6 +77,30 @@ describe("sourceProfileSchema", () => {
   it("rejects a description longer than the max length", () => {
     expect(sourceProfileSchema.safeParse({ description: "a".repeat(2001) }).success).toBe(false);
   });
+
+  it("rejects a homepageUrl carrying embedded credentials (user:pass@host)", () => {
+    expect(
+      sourceProfileSchema.safeParse({ homepageUrl: "https://user:pass@evil.example.com" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a homepageUrl using a deceptive userinfo segment (looks like one host, resolves to another)", () => {
+    // The visible/copyable text names "legit-looking.example.com" but a
+    // browser actually navigates to "attacker.example.com" — the classic
+    // `https://trusted-looking@evil-host` phishing pattern.
+    expect(
+      sourceProfileSchema.safeParse({
+        homepageUrl: "https://legit-looking.example.com@attacker.example.com",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a logoUrl carrying embedded credentials", () => {
+    expect(
+      sourceProfileSchema.safeParse({ logoUrl: "https://user:pass@evil.example.com/logo.png" })
+        .success,
+    ).toBe(false);
+  });
 });
 
 describe("externalAssessmentSchema", () => {
@@ -150,6 +174,21 @@ describe("externalAssessmentSchema", () => {
   it("rejects a provider longer than the max length", () => {
     expect(
       externalAssessmentSchema.safeParse({ ...valid, provider: "a".repeat(201) }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a referenceUrl carrying embedded credentials or a deceptive userinfo host", () => {
+    expect(
+      externalAssessmentSchema.safeParse({
+        ...valid,
+        referenceUrl: "https://user:pass@evil.example.com/report",
+      }).success,
+    ).toBe(false);
+    expect(
+      externalAssessmentSchema.safeParse({
+        ...valid,
+        referenceUrl: "https://rating-institute.example.com@attacker.example.com/report",
+      }).success,
     ).toBe(false);
   });
 });
