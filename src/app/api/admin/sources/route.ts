@@ -2,11 +2,23 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
+import { httpUrl } from "@/lib/validation/sourceProfile";
 
+// Both url and homepageUrl are rendered as real clickable links in the
+// admin sources list (the feed-URL external-link icon and the homepage
+// link respectively), so a bare z.string().url() here would accept
+// javascript:/data:/file: schemes and credentialed/deceptive URLs — the
+// same click-triggered vector fixed elsewhere in Phase 6's own routes.
+// httpUrl (already used by the Phase 6 profile/assessment schemas)
+// restricts both to plain http(s) with no embedded userinfo. This isn't a
+// behavior change for a legitimate feed url: ingestion's own SSRF guard
+// (assertPublicHttpUrl) already refuses anything but http(s) before ever
+// fetching it — this just surfaces that same rule as a clear 400 at
+// creation time instead of a later fetch failure.
 const createSchema = z.object({
   name: z.string().min(1).max(200),
-  url: z.string().url(),
-  homepageUrl: z.string().url().optional().or(z.literal("")),
+  url: httpUrl,
+  homepageUrl: httpUrl.optional().or(z.literal("")),
   categorySlug: z.string().min(1),
   fetchIntervalMinutes: z.number().int().min(5).max(1440).optional(),
 });

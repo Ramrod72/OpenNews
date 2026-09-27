@@ -38,6 +38,7 @@ import {
   DELETE as deleteAssessment,
 } from "@/app/api/admin/sources/[id]/assessments/[assessmentId]/route";
 import { PATCH as patchSource } from "@/app/api/admin/sources/[id]/route";
+import { POST as createSource } from "@/app/api/admin/sources/route";
 
 async function signInAsAdmin() {
   const session = await getAdminSession();
@@ -64,6 +65,7 @@ function authedReq(method: string, body?: unknown) {
 let categoryId: string;
 let sourceAId: string;
 let sourceBId: string;
+const createdSourceIds: string[] = [];
 
 beforeAll(async () => {
   const category = await prisma.category.create({
@@ -93,9 +95,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.externalAssessment.deleteMany({
-    where: { sourceId: { in: [sourceAId, sourceBId] } },
+    where: { sourceId: { in: [sourceAId, sourceBId, ...createdSourceIds] } },
   });
-  await prisma.source.deleteMany({ where: { id: { in: [sourceAId, sourceBId] } } });
+  await prisma.source.deleteMany({
+    where: { id: { in: [sourceAId, sourceBId, ...createdSourceIds] } },
+  });
   await prisma.category.delete({ where: { id: categoryId } });
   await prisma.$disconnect();
 });
@@ -264,5 +268,146 @@ describe("PATCH /api/admin/sources/[id] — profile allowlist cannot smuggle ing
       params: Promise.resolve({ id: sourceAId }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/admin/sources — create-source URL validation", () => {
+  const baseName = "Adversarial Review Follow-up Source";
+  let n = 0;
+  function nextPayload(overrides: Record<string, unknown> = {}) {
+    n += 1;
+    return {
+      name: `${baseName} ${n}`,
+      url: `https://create-route-test-${n}.example.com/feed.xml`,
+      categorySlug: "test-source-admin",
+      ...overrides,
+    };
+  }
+
+  const unsafeUrls = [
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "file:///etc/passwd",
+    "ftp://example.com/feed.xml",
+    "https://user:pass@evil.example.com/feed.xml",
+    "https://trusted-looking@evil-host.example/feed.xml",
+  ];
+
+  describe("url field", () => {
+    for (const bad of unsafeUrls) {
+      it(`rejects url=${JSON.stringify(bad)} with 400 and creates nothing`, async () => {
+        await signInAsAdmin();
+        const payload = nextPayload({ url: bad });
+        const res = await createSource(authedReq("POST", payload));
+        expect(res.status).toBe(400);
+        // Scoped to this test's own attempted name (never a bare table-wide
+        // count) — vitest runs test files concurrently against the same
+        // shared SQLite db, so a global count() is racy against other
+        // files' fixtures.
+        const created = await prisma.source.findFirst({ where: { name: payload.name } });
+        expect(created).toBeNull();
+      });
+    }
+
+    it("accepts a plain https:// feed url and actually persists it", async () => {
+      await signInAsAdmin();
+      const payload = nextPayload();
+      const res = await createSource(authedReq("POST", payload));
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      createdSourceIds.push(body.source.id);
+      const stored = await prisma.source.findUnique({ where: { id: body.source.id } });
+      expect(stored?.url).toBe(payload.url);
+    });
+
+    it("accepts a plain http:// feed url", async () => {
+      await signInAsAdmin();
+      const payload = nextPayload({
+        url: `http://create-route-test-http-${++n}.example.com/feed.xml`,
+      });
+      const res = await createSource(authedReq("POST", payload));
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      createdSourceIds.push(body.source.id);
+    });
+  });
+
+  describe("homepageUrl field", () => {
+    for (const bad of unsafeUrls) {
+      it(`rejects homepageUrl=${JSON.stringify(bad)} with 400 and creates nothing`, async () => {
+        await signInAsAdmin();
+        const payload = nextPayload({ homepageUrl: bad });
+        const res = await createSource(authedReq("POST", payload));
+        expect(res.status).toBe(400);
+        const created = await prisma.source.findFirst({ where: { name: payload.name } });
+        expect(created).toBeNull();
+      });
+    }
+
+    it("accepts a valid https:// homepageUrl and persists it", async () => {
+      await signInAsAdmin();
+      const payload = nextPayload({ homepageUrl: "https://publisher.example.com" });
+      const res = await createSource(authedReq("POST", payload));
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      createdSourceIds.push(body.source.id);
+      expect(body.source.homepageUrl).toBe("https://publisher.example.com");
+    });
+
+    it("omitting homepageUrl entirely still creates the source with it null", async () => {
+      await signInAsAdmin();
+      const payload = nextPayload();
+      const res = await createSource(authedReq("POST", payload));
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      createdSourceIds.push(body.source.id);
+      expect(body.source.homepageUrl).toBeNull();
+    });
+
+    it('an empty-string homepageUrl ("no homepage yet") is still accepted and stored as null', async () => {
+      await signInAsAdmin();
+      const payload = nextPayload({ homepageUrl: "" });
+      const res = await createSource(authedReq("POST", payload));
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      createdSourceIds.push(body.source.id);
+      expect(body.source.homepageUrl).toBeNull();
+    });
+  });
+
+  describe("authorization and existing behavior are unaffected by the validator change", () => {
+    it("still requires authentication (401, creates nothing)", async () => {
+      const payload = nextPayload();
+      const res = await createSource(authedReq("POST", payload));
+      expect(res.status).toBe(401);
+      const created = await prisma.source.findFirst({ where: { name: payload.name } });
+      expect(created).toBeNull();
+    });
+
+    it("still requires the CSRF header even when authenticated (403)", async () => {
+      await signInAsAdmin();
+      const res = await createSource(req("POST", nextPayload()));
+      expect(res.status).toBe(403);
+    });
+
+    it("still rejects an unknown categorySlug with 400", async () => {
+      await signInAsAdmin();
+      const res = await createSource(
+        authedReq("POST", nextPayload({ categorySlug: "does-not-exist-category" })),
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it("still returns 409 for a duplicate feed url", async () => {
+      await signInAsAdmin();
+      const payload = nextPayload();
+      const first = await createSource(authedReq("POST", payload));
+      expect(first.status).toBe(201);
+      const firstBody = await first.json();
+      createdSourceIds.push(firstBody.source.id);
+
+      const second = await createSource(authedReq("POST", { ...payload, name: "Different name" }));
+      expect(second.status).toBe(409);
+    });
   });
 });
