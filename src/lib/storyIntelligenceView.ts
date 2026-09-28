@@ -1,5 +1,6 @@
 import type { ClusterOriginSummary, ObservationRef } from "@/lib/graph/types";
 import type { ProvenanceEntityType } from "@/lib/validation/provenance";
+import { safeHttpUrl } from "@/lib/security/sanitize";
 
 /**
  * Phase 9B — the ONE safe boundary between Phase 8's internal
@@ -34,6 +35,21 @@ export const MAX_EVIDENCE_PER_ARTICLE = 5;
  * itself always reflects the true, untruncated total.
  */
 export const MAX_ARTICLES_PER_GROUP_DISPLAY = 50;
+
+/**
+ * Hard ceiling on the TOTAL number of evidence snippets one group ever
+ * renders, independent of MAX_ARTICLES_PER_GROUP_DISPLAY /
+ * MAX_EVIDENCE_PER_ARTICLE. Those two caps bound article rows and
+ * per-article snippets separately, but their product is still large: 50
+ * articles x 5 snippets x a 200-char evidence-text cap
+ * (MAX_EVIDENCE_TEXT_LENGTH in persistObservations.ts) is up to ~50,000
+ * characters of publisher-sourced text for one expanded group — well past
+ * what "supporting evidence for a citation" should ever mean. This caps the
+ * flattened, already-priority-ordered evidence list (HIGH before MEDIUM,
+ * displayed-article order otherwise) rather than changing what's selected
+ * per article.
+ */
+export const MAX_EVIDENCE_ITEMS_PER_GROUP = 100;
 
 /** Entity types that represent a reporting intermediary (a wire service or another outlet), vs. a directly-cited primary source. */
 const REPORTING_INTERMEDIARY_ENTITY_TYPES: ReadonlySet<ProvenanceEntityType> = new Set([
@@ -109,6 +125,22 @@ function reportingSourceKind(entityType: ProvenanceEntityType): ReportingSourceK
     : "referenced_source";
 }
 
+/**
+ * Article.url is untrusted: it ultimately comes from a publisher's RSS
+ * feed, and normalizeUrl() (src/lib/ingest/normalize.ts) only canonicalizes
+ * a URL — it does not restrict its scheme. A malicious or compromised feed
+ * could in principle supply a `javascript:`/`data:`/`vbscript:` link, which
+ * would otherwise render as a clickable <a href> in EvidenceDrawer.tsx.
+ * safeHttpUrl (src/lib/security/sanitize.ts, the same convention
+ * safeImageUrl already establishes for feed-supplied image URLs) strips
+ * this down to only plain http(s) URLs; "" signals no safe link is
+ * available, and EvidenceDrawer renders that case as plain (non-clickable)
+ * text rather than an anchor.
+ */
+function safeArticleHref(url: string): string {
+  return safeHttpUrl(url) ?? "";
+}
+
 function toArticleLink(
   articleId: string,
   articlesById: ReadonlyMap<string, ViewArticle>,
@@ -118,7 +150,7 @@ function toArticleLink(
   return {
     articleId: article.id,
     title: article.title,
-    url: article.url,
+    url: safeArticleHref(article.url),
     publisherName: article.source.name,
     publisherSourceId: article.source.id,
   };
@@ -157,7 +189,7 @@ function selectEvidence(
       items.push({
         articleId: article.id,
         title: article.title,
-        url: article.url,
+        url: safeArticleHref(article.url),
         publisherName: article.source.name,
         publisherSourceId: article.source.id,
         evidenceText: obs.evidenceText,
@@ -205,7 +237,10 @@ export function buildStoryIntelligenceView(
       articles: displayedArticleIds
         .map((id) => toArticleLink(id, articlesById))
         .filter((a): a is StoryIntelligenceArticleLink => a !== null),
-      evidence: selectEvidence(displayedObservations, articlesById),
+      evidence: selectEvidence(displayedObservations, articlesById).slice(
+        0,
+        MAX_EVIDENCE_ITEMS_PER_GROUP,
+      ),
     };
   });
 
@@ -232,7 +267,7 @@ export function buildStoryIntelligenceView(
                   return {
                     articleId: article.id,
                     title: article.title,
-                    url: article.url,
+                    url: safeArticleHref(article.url),
                     publisherName: article.source.name,
                     publisherSourceId: article.source.id,
                     evidenceText: s.evidenceText,

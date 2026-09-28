@@ -835,16 +835,42 @@ bounds `articles`/`evidence` per group (and per the original-reporting
 list) independently of the group's own true `articleCount`, which is
 never truncated. Within whatever's displayed, `MAX_EVIDENCE_PER_ARTICLE`
 (5) further bounds evidence snippets per article, HIGH-prioritized over
-MEDIUM internally — the raw confidence value itself is never exposed.
+MEDIUM internally — the raw confidence value itself is never exposed. A
+third, TOTAL cap (`MAX_EVIDENCE_ITEMS_PER_GROUP`, 100) bounds the
+flattened evidence list for one group even when every displayed article
+contributes its own per-article maximum (50 articles x 5 snippets could
+otherwise reach ~50,000 characters of publisher-sourced text for one
+expanded group). Whenever a group or the original-reporting list is
+actually truncated, `EvidenceDrawer` says so explicitly ("Showing 50 of
+127 articles") rather than letting the true `articleCount`/`count` next to
+a shorter list imply the display is complete or that articles are
+missing/broken.
+
+**Article links are scheme-sanitized before they ever reach a Client
+Component.** `Article.url` is untrusted (ultimately from a publisher's RSS
+feed), and `normalizeUrl()` (`src/lib/ingest/normalize.ts`) only
+canonicalizes a URL — it does not restrict its scheme, so a malicious or
+compromised feed could in principle supply a `javascript:`/`data:` link.
+`storyIntelligenceView.ts` runs every article URL through `safeHttpUrl`
+(`src/lib/security/sanitize.ts` — the same http(s)-only convention
+`safeImageUrl` already establishes for feed-supplied image URLs) before
+it's ever included in the view model; an unsafe scheme becomes `""`, and
+`EvidenceDrawer` renders that case as plain, non-clickable text instead of
+an `<a href>`.
 
 **Failure isolation.** Story Intelligence must never take down the rest
-of the story page. `loadStoryIntelligence` wraps its entire body in one
-try/catch; any failure — `getClusterOriginSummary` throwing, the
-entitlement lookup throwing — resolves to `{ status: "unavailable" }`,
-rendered as "Story sourcing details are temporarily unavailable," with no
-stack trace or internal detail. Resolving the current viewer is handled
-_separately_, by `resolveStoryIntelligenceViewerId`, which fails safely to
-anonymous (the same fail-to-anonymous precedent `resolveViewerAdEligibility`
+of the story page, and an entitlement-service hiccup must never be treated
+the same as "nothing to show." `loadStoryIntelligence` handles its two
+failure sources differently on purpose: the entitlement lookup (`can()`)
+has its own try/catch and fails CLOSED to `hasFullAccess = false` (the
+Free/logged-out experience) rather than granting full access or hiding
+already-available sourcing data; `getClusterOriginSummary` throwing means
+there's nothing safe to show at all, so only that failure resolves the
+whole section to `{ status: "unavailable" }`, rendered as "Story sourcing
+details are temporarily unavailable," with no stack trace or internal
+detail either way. Resolving the current viewer is handled _separately_,
+by `resolveStoryIntelligenceViewerId`, which fails safely to anonymous
+(the same fail-to-anonymous precedent `resolveViewerAdEligibility`
 already establishes in `src/lib/ads.ts`) — before this feature, the story
 page had no dependency on the auth/session tables at all, so a transient
 failure there must degrade gracefully rather than take down a page that

@@ -294,10 +294,17 @@ describe("no mutation / no network request from loadStoryIntelligence", () => {
     });
     const cluster = await loadClusterCard(clusterId);
 
+    // Scoped to this test's own category/cluster, not a global count — this
+    // test suite's own DB is shared across concurrently-running test FILES
+    // (see vitest.config.ts: no fileParallelism: false), so a global
+    // prisma.X.count() races against unrelated tests writing rows at the
+    // same time and is not a reliable "nothing was mutated" signal.
     const before = {
-      articles: await prisma.article.count(),
-      observations: await prisma.provenanceObservation.count(),
-      clusters: await prisma.storyCluster.count(),
+      articles: await prisma.article.count({ where: { categoryId } }),
+      observations: await prisma.provenanceObservation.count({
+        where: { article: { categoryId } },
+      }),
+      clusters: await prisma.storyCluster.count({ where: { categoryId } }),
     };
 
     const originalFetch = global.fetch;
@@ -314,9 +321,11 @@ describe("no mutation / no network request from loadStoryIntelligence", () => {
     expect(fetchCalled).toBe(false);
 
     const after = {
-      articles: await prisma.article.count(),
-      observations: await prisma.provenanceObservation.count(),
-      clusters: await prisma.storyCluster.count(),
+      articles: await prisma.article.count({ where: { categoryId } }),
+      observations: await prisma.provenanceObservation.count({
+        where: { article: { categoryId } },
+      }),
+      clusters: await prisma.storyCluster.count({ where: { categoryId } }),
     };
     expect(after).toEqual(before);
   });

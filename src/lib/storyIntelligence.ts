@@ -53,21 +53,39 @@ export async function resolveStoryIntelligenceViewerId(): Promise<string | null>
  * Failure isolation (locked requirement): a failure anywhere in this
  * function — getClusterOriginSummary throwing, the entitlement lookup
  * throwing — must never propagate to the caller and must never take down
- * the rest of the story page. Every failure resolves to
- * `{ status: "unavailable" }`, with no stack trace, no error message, and
- * no internal detail attached; the caller only ever sees that one flat
- * shape either way (see storyIntelligenceView.ts's StoryIntelligenceResult).
+ * the rest of the story page. The two failure modes are handled
+ * differently on purpose:
+ *  - getClusterOriginSummary throwing means there is nothing safe to show
+ *    at all, so the whole section resolves to `{ status: "unavailable" }`.
+ *  - can() throwing is an entitlement-service hiccup, not a reason to hide
+ *    already-available sourcing data — it fails CLOSED to hasFullAccess =
+ *    false (the Free/logged-out experience) rather than either granting
+ *    full access or taking down the section, matching this codebase's
+ *    existing fail-closed-for-paid-features precedent
+ *    (resolveViewerAdEligibility in src/lib/ads.ts fails the opposite
+ *    direction — no ads — for the same "never risk a paid guarantee on an
+ *    error" reason).
+ * Neither path ever attaches a stack trace, error message, or other
+ * internal detail to the returned shape (see storyIntelligenceView.ts's
+ * StoryIntelligenceResult) — only a server-side console.error.
  */
 export async function loadStoryIntelligence(
   cluster: StoryClusterCard,
   userId: string | null,
 ): Promise<StoryIntelligenceResult> {
+  let hasFullAccess = false;
   try {
-    const [summary, hasFullAccess] = await Promise.all([
-      getClusterOriginSummary(prisma, cluster.id),
-      can(userId, "provenance_full"),
-    ]);
+    hasFullAccess = await can(userId, "provenance_full");
+  } catch (err) {
+    console.error(
+      `[storyIntelligence] entitlement lookup failed for cluster ${cluster.id}, defaulting to no full access:`,
+      err,
+    );
+    hasFullAccess = false;
+  }
 
+  try {
+    const summary = await getClusterOriginSummary(prisma, cluster.id);
     const articles: ViewArticle[] = cluster.articles.map((a) => ({
       id: a.id,
       title: a.title,

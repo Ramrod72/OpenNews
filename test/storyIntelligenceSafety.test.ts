@@ -253,6 +253,26 @@ describe("AK/AL/AM — existing story-page functionality remains referenced (not
   });
 });
 
+describe("50-article display cap is disclosed, never silently implying completeness", () => {
+  it("EvidenceDrawer shows a 'Showing X of Y articles' note when a group/original-reporting list was truncated", () => {
+    const source = read("src/components/story/EvidenceDrawer.tsx");
+    expect(source).toMatch(/Showing \{.*\} of \{.*\} articles/);
+  });
+});
+
+describe("hostile article URLs never become a clickable href", () => {
+  it("EvidenceDrawer only renders an <a href> when article.url is truthy, otherwise plain text", () => {
+    const source = read("src/components/story/EvidenceDrawer.tsx");
+    expect(source).toMatch(/article\.url\s*\?/);
+  });
+
+  it("storyIntelligenceView.ts sanitizes Article.url through the same http(s)-only convention as safeImageUrl", () => {
+    const source = read("src/lib/storyIntelligenceView.ts");
+    expect(source).toMatch(/safeHttpUrl/);
+    expect(source).toMatch(/from ["']@\/lib\/security\/sanitize["']/);
+  });
+});
+
 describe("no schema/migration changes were introduced by Phase 9B", () => {
   it("prisma/schema.prisma is unchanged and no new migration directory was added by this feature", () => {
     // This is a coarse sanity check, not a git diff — the real diff-based

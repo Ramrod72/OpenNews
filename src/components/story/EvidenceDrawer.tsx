@@ -81,6 +81,11 @@ export function EvidenceDrawer({
                   <EvidenceEntry key={`${item.articleId}-${i}`} item={item} />
                 ))}
               </ul>
+              {originalReporting.items.length < originalReporting.count && (
+                <p className="mt-2 text-xs text-foreground-muted italic">
+                  Showing {originalReporting.items.length} of {originalReporting.count} articles.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -116,6 +121,15 @@ function ReportingSourceGroupDetails({ group }: { group: ReportingSourceGroupVie
               ))}
             </ul>
           )
+        )}
+        {/* group.articles always reflects the true displayed count (see
+            MAX_ARTICLES_PER_GROUP_DISPLAY in storyIntelligenceView.ts), even
+            when `evidence` is what's actually rendered above — so this
+            comparison is accurate either way. */}
+        {group.articles && group.articles.length < group.articleCount && (
+          <p className="text-xs text-foreground-muted italic">
+            Showing {group.articles.length} of {group.articleCount} articles.
+          </p>
         )}
       </div>
     </details>
@@ -157,14 +171,22 @@ function ArticleLinkLine({
       >
         {article.publisherName}
       </Link>
-      <a
-        href={article.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 font-semibold break-words hover:text-accent hover:underline"
-      >
-        {article.title} <ExternalLink size={12} aria-hidden />
-      </a>
+      {article.url ? (
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 font-semibold break-words hover:text-accent hover:underline"
+        >
+          {article.title} <ExternalLink size={12} aria-hidden />
+        </a>
+      ) : (
+        // storyIntelligenceView.ts's safeArticleHref already filtered out
+        // any non-http(s) article URL (javascript:, data:, ...) — an empty
+        // url here means no safe link exists, so the title renders as plain
+        // text rather than a clickable, potentially unsafe anchor.
+        <span className="font-semibold break-words">{article.title}</span>
+      )}
     </div>
   );
 }

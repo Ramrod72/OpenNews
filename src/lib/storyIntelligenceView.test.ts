@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_ARTICLES_PER_GROUP_DISPLAY,
+  MAX_EVIDENCE_ITEMS_PER_GROUP,
   MAX_EVIDENCE_PER_ARTICLE,
   MAX_FREE_REPORTING_GROUPS,
   buildStoryIntelligenceView,
@@ -509,6 +510,101 @@ describe("type shape sanity", () => {
   it("status is always 'ok' from this function (unavailable is only produced by the loader)", () => {
     const view: StoryIntelligenceView = buildStoryIntelligenceView(summary(), [], true);
     expect(view.status).toBe("ok");
+  });
+});
+
+describe("hostile article URL is never rendered as a clickable link", () => {
+  it("strips a javascript: article URL to an empty string in both articles[] and evidence[]", () => {
+    const hostileArticle = article("a1", { url: "javascript:alert(document.cookie)" });
+    const group = reutersGroup({
+      articleIds: ["a1", "a2"],
+      observations: [
+        observation({ observationId: "o1", articleId: "a1" }),
+        observation({ observationId: "o2", articleId: "a2" }),
+      ],
+    });
+    const view = buildStoryIntelligenceView(
+      summary({ sharedReportingSourceGroups: [group] }),
+      [hostileArticle, article("a2")],
+      true,
+    );
+    const g = view.reportingSourceGroups[0]!;
+    const articleLink = g.articles!.find((a) => a.articleId === "a1")!;
+    const evidenceLink = g.evidence!.find((e) => e.articleId === "a1")!;
+    expect(articleLink.url).toBe("");
+    expect(evidenceLink.url).toBe("");
+    expect(JSON.stringify(view)).not.toMatch(/javascript:/i);
+  });
+
+  it("strips a data: article URL the same way", () => {
+    const hostileArticle = article("a1", { url: "data:text/html,<script>alert(1)</script>" });
+    const group = reutersGroup({ articleIds: ["a1", "a2"] });
+    const view = buildStoryIntelligenceView(
+      summary({ sharedReportingSourceGroups: [group] }),
+      [hostileArticle, article("a2")],
+      true,
+    );
+    const articleLink = view.reportingSourceGroups[0]!.articles!.find((a) => a.articleId === "a1")!;
+    expect(articleLink.url).toBe("");
+  });
+
+  it("leaves an ordinary https:// article URL unchanged", () => {
+    const view = buildStoryIntelligenceView(
+      summary({ sharedReportingSourceGroups: [reutersGroup()] }),
+      [article("a1"), article("a2")],
+      true,
+    );
+    const articleLink = view.reportingSourceGroups[0]!.articles!.find((a) => a.articleId === "a1")!;
+    expect(articleLink.url).toBe("https://example.com/a1");
+  });
+
+  it("strips a hostile URL in an original-reporting item too", () => {
+    const hostileArticle = article("a1", { url: "javascript:alert(1)" });
+    const s = summary({
+      sharedReportingSourceGroups: [],
+      originalReportingSignals: [
+        {
+          articleId: "a1",
+          publisherSourceId: "src-a1",
+          publisherName: "Source a1",
+          observationId: "o1",
+          confidence: "HIGH",
+          evidenceText: "the reporter witnessed the events",
+        },
+      ],
+    });
+    const view = buildStoryIntelligenceView(s, [hostileArticle], true);
+    expect(view.originalReporting?.items?.[0]?.url).toBe("");
+  });
+});
+
+describe("per-group total evidence cap (MAX_EVIDENCE_ITEMS_PER_GROUP)", () => {
+  it("caps the flattened evidence list even when every article contributes the per-article max", () => {
+    // 25 articles x 5 evidence each = 125 candidate items, comfortably over
+    // MAX_EVIDENCE_ITEMS_PER_GROUP (100) but each individually under
+    // MAX_ARTICLES_PER_GROUP_DISPLAY (50) and MAX_EVIDENCE_PER_ARTICLE (5).
+    const articleCount = 25;
+    const articleIds = Array.from({ length: articleCount }, (_, i) => `a${i}`);
+    const articles = articleIds.map((id) => article(id));
+    const observations: ObservationRef[] = articleIds.flatMap((id, ai) =>
+      Array.from({ length: 5 }, (_, i) =>
+        observation({
+          observationId: `${id}-o${i}`,
+          articleId: id,
+          evidenceText: `snip-${ai}-${i}`,
+        }),
+      ),
+    );
+    const group = reutersGroup({ articleIds, observations });
+    const view = buildStoryIntelligenceView(
+      summary({ sharedReportingSourceGroups: [group] }),
+      articles,
+      true,
+    );
+    const g = view.reportingSourceGroups[0]!;
+    expect(g.articleCount).toBe(articleCount); // true count unaffected
+    expect(g.articles).toHaveLength(articleCount); // under the 50-article cap, all displayed
+    expect(g.evidence!.length).toBe(MAX_EVIDENCE_ITEMS_PER_GROUP);
   });
 });
 

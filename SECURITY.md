@@ -459,12 +459,47 @@ publisher links are always internal Next.js `<Link>`s to
 `/sources/[id]`, built only from the article's own already-loaded
 `Source.id` — never an arbitrary URL derived from entity/publisher text.
 
+**Article URL scheme sanitization.** Unlike the publisher link above,
+`article.url` itself is genuinely untrusted (it ultimately comes from a
+publisher's RSS feed), and `normalizeUrl()` only canonicalizes a URL — it
+does not reject a non-http(s) scheme. A final-review pass confirmed
+`new URL("javascript:alert(1)")` parses without throwing, and that no
+existing ingestion step rejects it either, so a malicious or compromised
+feed could in principle place a `javascript:`/`data:`/`vbscript:` URL in
+`Article.url`. `storyIntelligenceView.ts` now runs every article URL
+through `safeHttpUrl` (`src/lib/security/sanitize.ts` — the same http(s)-
+only allowlist `safeImageUrl` already used for feed-supplied image URLs,
+refactored to share one implementation) before it's ever included in the
+view model; a non-http(s) URL becomes `""`, and `EvidenceDrawer` renders
+that case as plain, non-clickable text rather than an `<a href>`.
+Regression-tested at both the mapper level (`storyIntelligenceView.test.ts`)
+and end-to-end against a real persisted `javascript:` URL
+(`test/storyIntelligence.integration.test.ts`-style scenario exercised
+manually during this review).
+
+**Entitlement-lookup failure fails closed, without hiding available data.**
+`loadStoryIntelligence` gives the entitlement check (`can()`) its own
+try/catch, separate from `getClusterOriginSummary`'s: if `can()` throws
+(a transient entitlement-service failure, a malformed plan/subscription
+row), `hasFullAccess` resolves to `false` — the Free/logged-out
+experience — rather than either accidentally granting full provenance
+access or hiding sourcing data that loaded successfully. Regression-tested
+against the real orchestrator with `@/lib/entitlements`'s `can` mocked to
+reject (`test/storyIntelligenceEntitlementFailure.integration.test.ts`).
+
 A single reporting-source group is bounded to `MAX_ARTICLES_PER_GROUP_DISPLAY`
 (50) displayed articles/evidence rows regardless of the group's true
 size, closing a giant-array rendering/payload-size risk this review
 specifically checked for (Phase 8 itself is tested against 1,000-article
 clusters). `articleCount` itself is never truncated — only the rendered
-list is bounded.
+list is bounded, and `EvidenceDrawer` discloses the truncation ("Showing
+50 of 127 articles") rather than letting the true count next to a shorter
+list imply completeness. A second, TOTAL cap
+(`MAX_EVIDENCE_ITEMS_PER_GROUP`, 100) additionally bounds the flattened
+evidence list per group — the per-article cap (5) times the per-group
+article cap (50) times the 200-character evidence-text cap could otherwise
+expose up to ~50,000 characters of publisher-sourced text for one expanded
+group, well past what "supporting evidence for a citation" should mean.
 
 No new network fetch, no schema change, no migration, and no new public
 API were introduced: Story Intelligence lives entirely on the existing
