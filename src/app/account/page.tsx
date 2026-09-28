@@ -8,6 +8,7 @@ import { PlanBadge } from "@/components/pricing/PlanBadge";
 import { FeatureStatusTag } from "@/components/pricing/FeatureStatusTag";
 import { UpgradeButton } from "@/components/pricing/UpgradeButton";
 import { LogoutButton } from "./LogoutButton";
+import { AppearanceSection } from "./AppearanceSection";
 
 export const metadata = { title: "Account" };
 
@@ -60,6 +61,8 @@ export default async function AccountPage() {
           ))}
         </ul>
       </div>
+
+      <AppearanceSection />
 
       {upgradeOptions.length > 0 && (
         <div className="rounded-xl border border-border p-4">
