@@ -417,6 +417,61 @@ merely coincidentally-identical short/boilerplate excerpts (e.g. both a
 malformed "Breaking News" placeholder) would otherwise score a perfect
 1.0 similarity from almost no real evidence.
 
+**Story Intelligence's client-serialization boundary (Phase 9B).**
+`src/lib/storyIntelligenceView.ts`'s `buildStoryIntelligenceView` is the
+ONE place `ClusterOriginSummary` is converted into anything a Client
+Component (`<EvidenceDrawer>`) can receive, and therefore the one place
+that determines what actually serializes into the page's client payload.
+The returned shape never contains `observationId`, `entityId`,
+`extractorVersion`, `reviewState`, `dedupeKey`, `startOffset`/
+`endOffset`, `mergedIntoId`, or any raw confidence enum
+(`"HIGH"`/`"MEDIUM"`) — regression-tested directly by asserting none of
+these strings appear anywhere in `JSON.stringify(view)`, for both an
+entitled and a non-entitled view. `<StoryIntelligence>` (the Server
+Component) and `<EvidenceDrawer>` (the one Client Component) both import
+only this safe view-model's types, never `@/lib/graph/*` or
+`ClusterOriginSummary` — enforced by a structural test alongside the
+existing Phase 8B UI-exposure boundary test (`test/provenanceBoundary.test.ts`,
+extended for Phase 9B).
+
+Entitlement gating happens in the data itself, server-side, before
+anything reaches a Client Component — never via CSS hiding pre-fetched
+premium data. A viewer without the `provenance_full` entitlement (Free,
+logged-out, or an unentitled account) gets a `StoryIntelligenceView` whose
+reporting-source groups are truncated to `MAX_FREE_REPORTING_GROUPS` (2)
+and whose `articles`/`evidence` fields are `undefined` on every group —
+there is no premium evidence text anywhere in the object for the browser
+to ever receive, regression-tested directly (`src/lib/storyIntelligenceView.test.ts`'s
+"Free/logged-out client payload contains no premium evidence" suite, plus
+a real-database integration test exercising Free/Basic/Pro/logged-out
+viewers against `loadStoryIntelligence`). No new entitlement key was
+added — this reuses the existing `provenance_full` key already present on
+the Basic and Pro plans.
+
+Evidence text renders as plain React text everywhere (never
+`dangerouslySetInnerHTML`, confirmed by a structural test scanning every
+new component file) — the same "feed content is untrusted, never
+rendered as markup" posture Phase 7B's own sanitization already
+establishes; a hostile `evidenceText`/article title/entity name displays
+harmlessly as literal text. Article links keep the app's existing
+external-link convention (`target="_blank" rel="noopener noreferrer"`);
+publisher links are always internal Next.js `<Link>`s to
+`/sources/[id]`, built only from the article's own already-loaded
+`Source.id` — never an arbitrary URL derived from entity/publisher text.
+
+A single reporting-source group is bounded to `MAX_ARTICLES_PER_GROUP_DISPLAY`
+(50) displayed articles/evidence rows regardless of the group's true
+size, closing a giant-array rendering/payload-size risk this review
+specifically checked for (Phase 8 itself is tested against 1,000-article
+clusters). `articleCount` itself is never truncated — only the rendered
+list is bounded.
+
+No new network fetch, no schema change, no migration, and no new public
+API were introduced: Story Intelligence lives entirely on the existing
+`/story/[slug]` canonical route, calling `getClusterOriginSummary`
+directly from server code exactly as Phase 8B intended, with zero new
+`fetch()` calls anywhere in the new files (structurally confirmed).
+
 ## Dependency scanning
 
 `npm audit` is not run in CI by default; run it locally before releases.

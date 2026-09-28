@@ -12,10 +12,12 @@ import {
   PERSPECTIVE_LABELS,
   type Perspective,
 } from "@/lib/perspective";
+import { loadStoryIntelligence, resolveStoryIntelligenceViewerId } from "@/lib/storyIntelligence";
 import { BreakingBadge, CategoryBadge } from "@/components/ui/CategoryBadge";
 import { BookmarkButton } from "@/components/story/BookmarkButton";
 import { ShareButton } from "@/components/story/ShareButton";
 import { StoryCard } from "@/components/story/StoryCard";
+import { StoryIntelligence } from "@/components/story/StoryIntelligence";
 import { AdContainer } from "@/components/ads/AdContainer";
 
 export const revalidate = 60;
@@ -62,7 +64,16 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
   if (!cluster) notFound();
 
   const storyUrl = getStoryUrl(cluster.slug);
-  const related = await getRelatedClusters(cluster, 6);
+  // All three depend only on `cluster` (or nothing), never on each other,
+  // so they run together. resolveStoryIntelligenceViewerId fails safely
+  // to anonymous on error; loadStoryIntelligence isolates every other
+  // failure on its own (see src/lib/storyIntelligence.ts) — neither can
+  // take down the rest of the page.
+  const [related, viewerId] = await Promise.all([
+    getRelatedClusters(cluster, 6),
+    resolveStoryIntelligenceViewerId(),
+  ]);
+  const storyIntelligence = await loadStoryIntelligence(cluster, viewerId);
   const timeline = [...cluster.articles].sort(
     (a, b) => a.publishedAt.getTime() - b.publishedAt.getTime(),
   );
@@ -157,6 +168,12 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
           >
             Compare sources
           </a>
+          <a
+            href="#trace-this-story-heading"
+            className="rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-surface-muted"
+          >
+            Trace this story
+          </a>
           <BookmarkButton
             slug={cluster.slug}
             headline={cluster.headline}
@@ -166,6 +183,8 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
           />
           <ShareButton url={storyUrl} title={cluster.headline} />
         </div>
+
+        <StoryIntelligence intelligence={storyIntelligence} />
 
         {byPerspective.size > 1 && (
           <section className="mt-10">
