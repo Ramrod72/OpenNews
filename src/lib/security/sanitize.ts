@@ -73,12 +73,22 @@ export function excerpt(text: string, maxLength = 220): string {
  * any such string is ever used as an href or src (see safeImageUrl below,
  * and storyIntelligenceView.ts, which applies this to Article.url before it
  * reaches EvidenceDrawer.tsx's rendered links).
+ *
+ * Also rejects embedded userinfo (`https://user:pass@host` or
+ * `https://trusted-looking@evil.com`) — the same check already applied to
+ * every other URL this app treats as a link target (see
+ * src/lib/validation/sourceProfile.ts's `httpUrl` and
+ * src/lib/siteUrl.ts's `toSafeOrigin`): a userinfo segment is a classic way
+ * to make a URL's visible text say one host while it actually navigates to
+ * another, and there's no legitimate reason a feed-supplied article link
+ * would carry credentials.
  */
 export function safeHttpUrl(url: string | undefined | null): string | null {
   if (!url) return null;
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.username !== "" || parsed.password !== "") return null;
     return parsed.toString();
   } catch {
     return null;

@@ -6,6 +6,7 @@ import { ExternalLink, Clock, Layers, Sparkles } from "lucide-react";
 import { getStoryClusterBySlug, getRelatedClusters } from "@/lib/stories";
 import { relativeTime, absoluteTime, shortTime } from "@/lib/format";
 import { getStoryUrl } from "@/lib/share";
+import { safeHttpUrl } from "@/lib/security/sanitize";
 import {
   classifyPerspective,
   PERSPECTIVE_DESCRIPTIONS,
@@ -21,6 +22,34 @@ import { StoryIntelligence } from "@/components/story/StoryIntelligence";
 import { AdContainer } from "@/components/ads/AdContainer";
 
 export const revalidate = 60;
+
+/**
+ * Article.url is untrusted (ultimately from a publisher's RSS feed), and
+ * normalizeUrl() (src/lib/ingest/normalize.ts) only canonicalizes a URL —
+ * it does not restrict its scheme, so a malicious/compromised feed could
+ * in principle supply a javascript:/data: link. Every external article
+ * link on this page goes through safeHttpUrl (the same http(s)-only
+ * convention Phase 9B's EvidenceDrawer already established) before it's
+ * ever used as an href; an unsafe scheme renders the title as plain,
+ * non-clickable text instead.
+ */
+function ArticleTitleLink({
+  article,
+  className,
+}: {
+  article: { url: string; title: string };
+  className: string;
+}) {
+  const safeUrl = safeHttpUrl(article.url);
+  if (!safeUrl) {
+    return <span className={className}>{article.title}</span>;
+  }
+  return (
+    <a href={safeUrl} target="_blank" rel="noopener noreferrer" className={className}>
+      {article.title}
+    </a>
+  );
+}
 
 export async function generateMetadata({
   params,
@@ -78,6 +107,7 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
     (a, b) => a.publishedAt.getTime() - b.publishedAt.getTime(),
   );
   const leadArticle = timeline[0];
+  const leadArticleUrl = leadArticle ? safeHttpUrl(leadArticle.url) : null;
 
   const byPerspective = new Map<Perspective, typeof timeline>();
   for (const article of timeline) {
@@ -146,9 +176,9 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
         )}
 
         <div className="mt-5 flex flex-wrap items-center gap-3">
-          {leadArticle && (
+          {leadArticle && leadArticleUrl && (
             <a
-              href={leadArticle.url}
+              href={leadArticleUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground"
@@ -201,14 +231,10 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
                     <ul className="space-y-2">
                       {byPerspective.get(p)!.map((a) => (
                         <li key={a.id}>
-                          <a
-                            href={a.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                          <ArticleTitleLink
+                            article={a}
                             className="text-sm font-medium hover:text-accent hover:underline"
-                          >
-                            {a.title}
-                          </a>
+                          />
                           <p className="text-xs text-foreground-muted">{a.source.name}</p>
                         </li>
                       ))}
@@ -237,14 +263,10 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
                 >
                   {shortTime(a.publishedAt)} — {a.source.name}
                 </time>
-                <a
-                  href={a.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <ArticleTitleLink
+                  article={a}
                   className="mt-0.5 block font-semibold hover:text-accent hover:underline"
-                >
-                  {a.title}
-                </a>
+                />
                 {a.excerpt && <p className="mt-1 text-sm text-foreground-muted">{a.excerpt}</p>}
               </li>
             ))}
@@ -283,14 +305,10 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
                   <ul className="space-y-3">
                     {articles.map((a) => (
                       <li key={a.id}>
-                        <a
-                          href={a.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <ArticleTitleLink
+                          article={a}
                           className="text-sm font-semibold hover:text-accent hover:underline"
-                        >
-                          {a.title}
-                        </a>
+                        />
                         <p className="text-xs text-foreground-muted">
                           {absoluteTime(a.publishedAt)}
                         </p>
