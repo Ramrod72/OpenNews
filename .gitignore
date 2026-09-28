@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# .env.example is a template with no secrets — it's meant to ship with the
+# repo (DEPLOYMENT.md/README instruct `cp .env.example .env`), so opt it
+# back in rather than leaving it permanently untracked.
+!.env.example
 
 # vercel
 .vercel
