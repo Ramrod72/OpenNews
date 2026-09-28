@@ -96,9 +96,17 @@ describe("Phase 7B exposes no public API and no admin UI for provenance data", (
       ...walk(join(ROOT, "src/components")).filter((f) => f.endsWith(".tsx")),
       ...walk(join(ROOT, "src/app")).filter((f) => f.endsWith(".tsx") && !f.includes("/api/")),
     ];
-    const offenders = uiFiles.filter((file) =>
-      /provenanceObservation|ProvenanceEntity|ProvenanceAlias/.test(readFileSync(file, "utf8")),
-    );
+    // Strip block/line comments before matching — same false-positive class
+    // already fixed elsewhere in this file: Phase 9B's and Phase 10B's own
+    // UI components legitimately document (in prose) that they never
+    // import these names, which a raw whole-file scan would otherwise
+    // (and did) false-positive on.
+    const offenders = uiFiles.filter((file) => {
+      const codeOnly = readFileSync(file, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "");
+      return /provenanceObservation|ProvenanceEntity|ProvenanceAlias/.test(codeOnly);
+    });
     expect(offenders).toEqual([]);
   });
 });
