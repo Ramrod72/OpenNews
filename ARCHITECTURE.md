@@ -904,6 +904,248 @@ corroboration, AI summaries or synthesis, shareable intelligence cards,
 Story Evolution, a URL analyzer, embeds, referrals, and any new
 entitlement key, schema change, migration, or public API.
 
+## Coverage Comparison — "Common assertions across coverage" (Phase 10B)
+
+Phase 10B adds Veriqen's first **deterministic** claim layer: it extracts
+a narrow, closed set of structured assertions from already-ingested
+article text, persists them per-article, and — at query time, per story
+cluster — groups conservatively similar assertions across articles and
+cross-references that grouping against Phase 8's reporting-source
+overlap. No AI, no embeddings, no external NLP, and no new network
+fetching anywhere in this feature; everything operates on text already in
+the database.
+
+**Locked epistemic rule: repetition is not corroboration.** An assertion
+appearing in 15 articles is a fact about repetition, not independent
+confirmation — and if 9 of those 15 also cite Reuters, that is a
+_second_, separately-displayed fact, never subtracted from the 15 and
+never combined into an "independence score." Veriqen never concludes
+truth or falsity, never says "N sources independently confirmed X," never
+treats majority reporting as proof, and never calls an outlet biased or
+lying. This rule is enforced structurally (`buildClaimGroups.ts`'s
+`sourceOverlap` is a parallel array field, never arithmetic against
+`articleCount`) as well as by a semantic-regression test suite
+(`test/coverageComparisonSafety.test.ts`) that greps the actual shipped
+source for forbidden affirmative phrasings ("N sources independently
+confirmed," "verified the claim," "same dispatch," "plagiarized," etc.).
+
+**Locked MVP claim taxonomy — exactly two kinds, nothing else.**
+`NUMERICAL_ASSERTION` (a number tied to one of a closed set of units:
+people, deaths, injuries, arrests, percent, USD, magnitude, years, votes,
+acres, miles, kilometers) and `ATTRIBUTED_STATEMENT` (a sentence
+containing an already-resolved Phase 7 attribution). Explicitly out of
+scope: direct quotes, generic declarative claims, opinion/prediction/
+allegation extraction, contradiction detection, semantic NLP, and any
+sentiment/bias/truth/framing score. Precision is prioritized over recall
+throughout — an ambiguous or unclear candidate is dropped, never guessed.
+
+**Single Attribution Authority.** `ATTRIBUTED_STATEMENT` claims are never
+independently re-detected. `buildAttributedStatementClaims.ts` takes
+already-persisted Phase 7 `ProvenanceObservation` rows (for the exact same
+article and extraction-source text buffer) as its only attribution input,
+and derives each claim purely from "which sentence contains this
+observation's span." This guarantees Phase 7 and Phase 10B can never
+drift into disagreeing about who said what, by construction rather than
+by discipline — there is deliberately no second attribution detector
+anywhere in this feature.
+
+**Data model — additive, one new table.** `Claim`
+(`prisma/migrations/20260928222747_phase10b_claims/`) stores one row per
+extracted assertion: `kind`, `rawText`/`normalizedText` (both bounded to
+`MAX_CLAIM_TEXT_LENGTH`, 200 chars), an optional `entityId` (FK to
+`ProvenanceEntity`, `SetNull` on delete — reused from Phase 7, never a
+new entity system), optional `numericValue`/`numericUnit`/
+`numericQualifier` for `NUMERICAL_ASSERTION` rows, `extractionSource`
+(reusing Phase 7's exact `TITLE`/`FEED_TEXT`/`STORED_EXCERPT_BACKFILL`
+semantics — historical backfill can never honestly claim `FEED_TEXT`),
+`startOffset`/`endOffset`, `confidence` (`HIGH`/`MEDIUM` only — see
+below), `claimExtractorVersion`, `reviewState` (defaults to
+`UNREVIEWED`; an `ADMIN_OVERRIDE` row is never touched by reprocessing or
+backfill), and a unique `dedupeKey` (SHA-256 of the fields that make an
+extraction "the same one" — identical convention to
+`ProvenanceObservation.dedupeKey`). There is deliberately **no**
+`ClaimGroup`, `ClaimOccurrence`, contradiction, truth, or score table:
+cross-article grouping is never persisted, mirroring `StoryCluster` +
+`SharedReportingSourceGroup`'s Phase 8 precedent exactly (persisted
+per-article facts, recomputed cross-article reasoning).
+
+**Confidence stays internal and split by concern.** The extractor's own
+output type allows `LOW`, but `persistClaimsForArticle` never persists a
+`LOW` row (false negative preferred over false positive, exactly Phase
+7B's own policy). Raw confidence is never exposed to a consumer, and
+there is no single combined "claim confidence score" anywhere — extraction
+confidence, grouping similarity (`SIMILARITY_THRESHOLD`), and attribution
+confidence (inherited from the underlying `ProvenanceObservation`) are
+kept as three separate internal concepts, never averaged into one number.
+
+**Extraction pipeline** (`src/lib/claims/`):
+`sentenceBoundary.ts` is a dependency-free, bounded
+(`MAX_SENTENCES_PER_TEXT`), abbreviation-aware sentence splitter — the
+foundational primitive both claim kinds build on, not a linguistic
+parser. `numberPatterns.ts` matches a closed set of unit regexes
+(`UNIT_RULES`) plus a qualifier detector (`EXACT`/`AT_LEAST`/`MORE_THAN`/
+`AT_MOST`/`LESS_THAN`/`APPROXIMATE`) and a bounded multiplier table
+(thousand/million/billion/trillion, capped at `MAX_NUMERIC_VALUE`), then
+suppresses overlapping candidates (same algorithm shape as Phase 7's
+`suppressOverlaps`). `extractNumericalAssertions.ts` sentence-splits,
+finds number candidates, and **discards any candidate whose containing
+sentence contains a negation word** (reusing Phase 7's own
+`NEGATION_WORDS` set, now exported from `patterns.ts` for this reuse) —
+"no injuries were reported" and "did not arrest 3 people" can never
+produce a claim, by construction; this is a coarse, whole-sentence check
+(false negative over false equivalence), not a parse of what the negation
+actually scopes over. `buildAttributedStatementClaims.ts` implements the
+Single Attribution Authority rule above. `normalize.ts` aliases the
+existing `normalizeTitle` (lowercase, Unicode-safe whitespace, punctuation
+normalization) as `normalizeClaimText` — deliberately no synonym
+dictionary, embeddings, or stemming: "injured" and "hospitalized" are
+never treated as equivalent, only exact structural/qualifier agreement
+groups two numerical claims together.
+
+**Persistence, capped and concurrency-safe** (`persistClaims.ts`).
+`MAX_CLAIMS_PER_ARTICLE` (20) is enforced across the whole article, not
+just one extraction call, with HIGH-confidence candidates prioritized
+ahead of MEDIUM before the cap is applied. The budget check and the
+writes that consume it run inside one `prisma.$transaction`, so two
+concurrent calls for the same `(articleId, claimExtractorVersion)` —
+title extraction and feed-text extraction both running at ingestion,
+or two overlapping backfill workers — can never both read a stale
+pre-write count and collectively overshoot the cap. This is the exact
+concurrency shape `persistObservations.ts` already established, adopted
+here specifically to avoid repeating Phase 8's own previously-fixed
+observation-cap race (see `test/claimPersistence.integration.test.ts`'s
+dedicated concurrency test).
+
+**New-article extraction** happens at the same transient,
+already-sanitized feed-text ingestion boundary Phase 7 already uses (see
+`ingestSource.ts`'s `extractAndPersistClaims`) — zero new network fetch.
+It runs immediately after Phase 7's own provenance extraction and reads
+back the observations that call just persisted, then calls
+`persistClaimsForArticle` once for `TITLE` and once for `FEED_TEXT` (if
+present). It has its own isolated `try`/`catch`, separate from both
+article creation and provenance extraction: a claim-extraction bug must
+never prevent an article from being created or be mistaken for a
+provenance failure.
+
+**Historical backfill** (`worker/backfill-claims.ts`) is modeled directly
+on `backfill-provenance.ts`: explicitly invoked (`npm run
+backfill:claims`), cursor-based (`orderBy: { id: "asc" }` + `cursor`/
+`skip`, resumable via `--after=<id>`), bounded batch size and
+concurrency, `--dry-run` support, and zero network. A historical article
+only ever has `title` and `excerpt` stored — the fuller feed text seen at
+ingestion time was never persisted — so this script can only ever
+produce `TITLE` or `STORED_EXCERPT_BACKFILL` extraction sources, never
+`FEED_TEXT`; a structural test asserts the literal string `FEED_TEXT`
+never appears as a claimed extraction source in this file. It clears
+stale-version claims (preserving any `ADMIN_OVERRIDE` row regardless of
+version) before reprocessing each article.
+
+**Query-time grouping, never persisted** (`buildClaimGroups.ts`), scoped
+to one `StoryCluster`'s already-loaded, current-version claims — pure,
+deterministic, no I/O. The two claim kinds have different safety profiles
+and are handled differently on purpose:
+
+- `NUMERICAL_ASSERTION` claims need no text-similarity comparison at all:
+  exact agreement on `(numericUnit, numericValue, numericQualifier)` IS
+  the grouping key. This is both _safer_ than fuzzy comparison (a
+  qualifier or unit mismatch can never be silently smoothed over — "12
+  injured" and "at least 12 injured" never group) and strictly linear —
+  one `Map` bucketing pass, no pairwise comparison, no bucket-size cap
+  needed at all.
+- `ATTRIBUTED_STATEMENT` claims first bucket by resolved canonical entity
+  (reusing Phase 8's own `resolveCanonicalEntityId`, so a merged
+  "DOJ"/"Department of Justice" entity resolves identically in both
+  features), since same-speaker alone is not sufficient to group two
+  statements. Within an entity bucket, bounded single-linkage TF-IDF/
+  cosine clustering (reusing `clustering/tfidf.ts`, same
+  `SIMILARITY_THRESHOLD` shape as `excerptSimilarity.ts`'s own precedent)
+  further splits genuinely similar statements from merely-same-speaker
+  ones. A bucket larger than `MAX_GROUP_SIZE_FOR_TEXT_COMPARISON` (25) is
+  **skipped entirely** for that entity — never compared exhaustively — and
+  the absence of a group there must never be read as "these statements
+  disagree," only that the bucket was too large to safely compare.
+
+Either way, a group requires `MIN_ARTICLES_FOR_GROUP` (2) distinct
+articles to exist at all — a single article's own claim is never
+displayed as a "shared assertion." `computeSourceOverlap` cross-references
+a group's article-id set against Phase 8's already-computed
+`sharedReportingSourceGroups` for the same cluster, returning a _separate_
+array (`sourceOverlap`) — this is the direct implementation of
+"repetition is not corroboration": a group's `articleCount` (true
+repetition) and its `sourceOverlap` (which of those articles also cite,
+say, Reuters) are always two different fields, never arithmetic against
+each other. Verified end-to-end at 1,000 claims in a single bucket in
+under the test's time budget with no pairwise comparison at all
+(`buildClaimGroups.test.ts`'s "Y" scenario).
+
+**Headline comparison** (`headlineComparison.ts`) is a separate, purely
+descriptive comparison over one text surface that's never truncated
+regardless of an article's age: named entities (reusing
+`extractKeywordPhrases`), numbers (reusing `numberPatterns.ts`), and
+publisher-labeled perspective (reusing `classifyPerspective` from
+`perspective.ts`, unchanged). It lists what each headline mentions and
+which entities are shared across 2+ headlines — it never scores framing,
+infers motive, or claims that a headline's silence on something means the
+full article omitted it.
+
+**Safe view model** (`coverageComparisonView.ts`) is the one boundary
+between internal shapes (`ClaimGroup`, whose `members` carry a Claim's
+internal id/entityId/offsets/raw confidence) and anything ever rendered
+or serialized to a browser — a pure mapper, no Prisma, no auth, no I/O,
+following Phase 9's `storyIntelligenceView.ts` pattern exactly.
+`hasFullAccess` (`coverage_comparison_full`) and `hasClaimComparison`
+(`claim_comparison` — both existing entitlement keys, no schema/seed
+change) control what fields are _included_ in the object, never what's
+hidden by CSS: `sourceOverlap` is present only for Basic+, and
+`occurrences` (per-article evidence, capped at
+`MAX_OCCURRENCES_PER_GROUP_DISPLAY`, 50) only for Pro. Free/logged-out
+gets a small bounded preview (`MAX_FREE_CLAIM_GROUPS`, 2 groups; up to
+`MAX_HEADLINE_ENTRIES_FREE`, 3, headline entries) with the true totals
+still reported so the upsell can say "+N more detected," never a
+completely empty section. Claim group text/evidence is capped throughout
+(`MAX_CLAIM_TEXT_LENGTH`, `MAX_CLAIM_GROUPS_DISPLAYED`) — short
+structured assertions, never large quantities of copied publisher text.
+Every article URL is run through the same `safeHttpUrl` gate Phase 9B
+established; an unsafe scheme renders as plain non-clickable text. A
+group's client-visible `key` (used only for React reconciliation) is
+built exclusively from already-consumer-safe fields — it must never
+incorporate a raw `entityId`, which has no legitimate consumer-facing use
+anywhere in the app (see the adversarial-review finding in this phase's
+PR description).
+
+**Orchestrator** (`coverageComparison.ts`) mirrors `storyIntelligence.ts`
+exactly: each entitlement check has its own independent try/catch and
+fails CLOSED (an entitlement-service hiccup degrades to Free behavior,
+never grants access and never hides already-available data);
+`getClusterOriginSummary` plus the claim/entity queries have a separate
+try/catch, and only that failure resolves the whole section to
+`{ status: "unavailable" }` — the rest of the story page (Trace this
+story, sharing, bookmarking, ads, the pre-existing per-outlet "Compare
+coverage" timing section) is entirely unaffected either way.
+
+**UI placement and terminology.** Rendered on the existing
+`/story/[slug]` page, immediately after "Trace this story" — no new
+route, no new public API, no modal-only experience. The section's own
+heading is deliberately **"Common assertions across coverage"**, not
+"Compare coverage": the page already has a pre-existing "Compare
+coverage" section (`id="compare"`, unrelated per-outlet headline/timing
+comparison predating this phase), and an identical duplicate `<h2>` would
+confuse heading-hierarchy navigation. Locked terminology throughout:
+"Appears in N articles," "N of these articles cite Reuters" (always as a
+separate sentence from the article count), "Attributed to [organization],"
+"Not detected in the available text" (never "omitted"/"did not
+report"/"hid"). A "How Veriqen compares coverage" `<details>` disclosure
+states the limitations in plain language, including that "not all
+comparable assertions are written explicitly, so some go undetected."
+
+**Deferred, explicitly out of scope for Phase 10B**: any AI/LLM/
+embeddings-based extraction, contradiction detection, truth or bias
+scoring, a public claims/coverage API, a dedicated `/compare` or `/claims`
+route, Story Map, Primary Evidence UI (the document-identity gap Phase
+10A identified is unchanged), and any new entitlement key. Phase 11, if
+it happens, would consume this phase's structured `Claim`/`ClaimGroup`
+output — it has not been started.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate
