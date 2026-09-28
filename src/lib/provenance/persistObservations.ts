@@ -19,6 +19,41 @@ export const EXTRACTOR_VERSION = "attribution-regex@1";
 const MAX_EVIDENCE_TEXT_LENGTH = 200;
 
 /**
+ * Phase 8B defensive cap: a hard maximum of auto-generated (non-
+ * ADMIN_OVERRIDE) ProvenanceObservation rows persisted per (articleId,
+ * extractorVersion), enforced here regardless of how many separate calls
+ * this function receives for the same article (TITLE, then FEED_TEXT for
+ * new ingestion; TITLE, then STORED_EXCERPT_BACKFILL for historical
+ * backfill — see ingestSource.ts / backfill-provenance.ts). Without this,
+ * a hostile or malformed feed item that repeats an attribution phrase
+ * hundreds or thousands of times (e.g. "Reuters reported. Reuters
+ * reported. ...") would pass every existing confidence/dedupe guard and
+ * still write one row per repetition, unboundedly inflating this table
+ * for a single article. The cap never touches ADMIN_OVERRIDE rows (a
+ * manual correction survives forever, and never counts against this
+ * budget) and is idempotent: rerunning extraction for the same text
+ * re-upserts the same already-persisted rows (a no-op) rather than
+ * consuming fresh budget, so a rerun never shrinks or reorders what was
+ * already kept.
+ */
+export const MAX_OBSERVATIONS_PER_ARTICLE = 20;
+
+const CONFIDENCE_PRIORITY: Record<string, number> = { HIGH: 0, MEDIUM: 1 };
+
+/**
+ * Stable sort (Array.prototype.sort is guaranteed stable) that moves HIGH
+ * ahead of MEDIUM without disturbing relative textual/evidence order
+ * within either tier — the array arrives already ordered by startOffset
+ * (see extract.ts's suppressOverlaps), and that ordering is exactly what
+ * "without destabilizing textual/evidence ordering" means here.
+ */
+function prioritizeByConfidence<T extends { confidence: string }>(items: T[]): T[] {
+  return [...items].sort(
+    (a, b) => (CONFIDENCE_PRIORITY[a.confidence] ?? 1) - (CONFIDENCE_PRIORITY[b.confidence] ?? 1),
+  );
+}
+
+/**
  * Loads the full (small) alias table once per worker tick / backfill
  * batch, for the caller to reuse across every article — never query the
  * database once per regex match (see ARCHITECTURE.md's Phase 7
@@ -62,6 +97,12 @@ export interface PersistObservationsResult {
   persisted: number;
   /** Confidence LOW is never written — Phase 7B's locked precision policy. Counted for observability/tests only. */
   discardedLow: number;
+  /**
+   * Phase 8B: candidates that were otherwise persistable (HIGH/MEDIUM) but
+   * were dropped solely by MAX_OBSERVATIONS_PER_ARTICLE. Counted for
+   * observability/tests only — never affects control flow.
+   */
+  cappedByLimit: number;
 }
 
 /**
@@ -73,6 +114,12 @@ export interface PersistObservationsResult {
  * the Article row itself from being created, the same way
  * ingestSource.ts's own linkKeywords() already isolates keyword-linking
  * failures.
+ *
+ * Phase 8B: also enforces MAX_OBSERVATIONS_PER_ARTICLE across the whole
+ * article, not just this one call's candidates — a single article can
+ * reach this function more than once (TITLE then FEED_TEXT at ingestion;
+ * TITLE then STORED_EXCERPT_BACKFILL during backfill), and the cap must
+ * hold regardless of how the text was split across those calls.
  */
 export async function persistObservationsForArticle(
   prisma: PrismaClient,
@@ -90,16 +137,23 @@ export async function persistObservationsForArticle(
     maxEvidenceLength: MAX_EVIDENCE_TEXT_LENGTH,
   });
 
-  let persisted = 0;
   let discardedLow = 0;
-
+  const persistable: (typeof extracted)[number][] = [];
   for (const observation of extracted) {
     if (!isPersistableConfidence(observation.confidence)) {
       discardedLow += 1;
       continue;
     }
+    persistable.push(observation);
+  }
 
-    const dedupeKey = computeDedupeKey({
+  // HIGH prioritized over MEDIUM, stable otherwise (see
+  // prioritizeByConfidence) — applied before the cap so that when a
+  // candidate must be dropped, a HIGH-confidence one is never dropped in
+  // favor of a MEDIUM one.
+  const prioritized = prioritizeByConfidence(persistable).map((observation) => ({
+    observation,
+    dedupeKey: computeDedupeKey({
       articleId: params.articleId,
       extractorVersion,
       extractionSource: params.extractionSource,
@@ -107,7 +161,39 @@ export async function persistObservationsForArticle(
       endOffset: observation.endOffset,
       relationshipType: observation.relationshipType,
       rawEntityText: observation.rawEntityText,
-    });
+    }),
+  }));
+
+  // Budget is computed against what's ALREADY durably persisted for this
+  // article+version (excluding ADMIN_OVERRIDE, which never counts against
+  // or is affected by this cap). A candidate whose dedupeKey already
+  // exists doesn't consume fresh budget — it's the same row being
+  // idempotently re-upserted, not a new one, so a rerun of an
+  // already-at-cap article never starts silently dropping previously-kept
+  // rows.
+  const existingRows = await prisma.provenanceObservation.findMany({
+    where: {
+      articleId: params.articleId,
+      extractorVersion,
+      reviewState: { not: "ADMIN_OVERRIDE" },
+    },
+    select: { dedupeKey: true },
+  });
+  const existingKeys = new Set(existingRows.map((row) => row.dedupeKey));
+  let budget = Math.max(0, MAX_OBSERVATIONS_PER_ARTICLE - existingRows.length);
+
+  let persisted = 0;
+  let cappedByLimit = 0;
+
+  for (const { observation, dedupeKey } of prioritized) {
+    const alreadyPersisted = existingKeys.has(dedupeKey);
+    if (!alreadyPersisted) {
+      if (budget <= 0) {
+        cappedByLimit += 1;
+        continue;
+      }
+      budget -= 1;
+    }
 
     try {
       // dedupeKey already encodes every field that would otherwise change,
@@ -142,7 +228,7 @@ export async function persistObservationsForArticle(
     }
   }
 
-  return { persisted, discardedLow };
+  return { persisted, discardedLow, cappedByLimit };
 }
 
 /**

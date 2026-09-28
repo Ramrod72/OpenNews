@@ -558,6 +558,157 @@ reliability/truth score, no admin UI, no public API exposing observations,
 no AI-based extraction. Phase 7B produces raw structured evidence only;
 reasoning across articles/clusters is Phase 8's job.
 
+## Source-group / origin-reasoning foundation (Phase 8B)
+
+Phase 8B is the first cross-article reasoning layer built on top of Phase
+7B's raw observations — but it is deliberately narrow: a **query-time-only,
+cluster-scoped** grouping of already-persisted evidence, not a general
+source graph, not a reliability system, and not claim-level reasoning
+(that remains Phase 10's job — see below). Everything lives in
+`src/lib/graph/`, callable only as the internal function
+`getClusterOriginSummary(prisma, clusterId)` — there is no REST endpoint,
+no `/api/graph`, no `/api/provenance`, and no UI reads it yet (a future
+Phase 9 will call it directly).
+
+**No persisted graph — locked.** There is no `InformationOriginGroup`, no
+`OriginGroupMember`, no `SourceGraphEdge`/`GraphEdge`, no
+`ReportingRelationship`, and no migration for any of them. Every
+`ClusterOriginSummary` is recomputed from scratch on each call, from
+whatever `ProvenanceObservation`/`ProvenanceEntity` rows and `StoryCluster`
+membership already exist — cheap, because a single cluster's article count
+is always small relative to the whole database. If a future phase's
+testing ever demonstrates a genuine performance need for persistence, that
+is a decision for that phase to make explicitly and re-justify, not
+something Phase 8B backs into quietly.
+
+**Cluster membership is a topic signal, not a provenance signal.**
+`StoryCluster` groups articles the clustering engine judged topically
+similar (TF-IDF cosine similarity — see above); that is never treated as
+evidence of shared origin. All Phase 8B reasoning is scoped to exactly one
+cluster at a time — nothing ever compares articles across two different
+clusters (regression-tested directly) — purely because a cluster is a
+natural, bounded unit of work, not because same-cluster implies
+same-origin.
+
+**`SHARED_REPORTING_SOURCE` — the Reuters/AP limitation.** Observations
+are grouped by their resolved `ProvenanceEntity`, after dereferencing
+`mergedIntoId` (bounded and cycle-safe — see below), within one cluster
+only. A group naming Reuters or AP means exactly one thing: **these
+articles' text cites the same reporting entity.** It is explicitly,
+permanently **not** "same dispatch," **not** "independently confirmed,"
+and **not** "same underlying claim" — wire services are cited by many
+unrelated outlets as a matter of routine, and this module never upgrades
+that to a stronger claim anywhere, under any confidence tier. A resolved
+short alias inherits whatever confidence Phase 7B already assigned it
+(`ObservationRef.confidence`); the group's own relationship confidence is
+a separate field, always `POSSIBLE` for a plain shared citation, never
+`CONFIRMED`.
+
+**Near-duplicate excerpt text — `LIKELY_SHARED_TEXT_ORIGIN`.**
+`excerptSimilarity.ts` compares `Article.excerpt` (the already-stored,
+already-sanitized ~220-character text) using word-level shingles (size 3)
+and Jaccard overlap — deterministic, no regex-based fuzzy matching, no NLP
+dependency. A pair clearing the similarity floor is exposed as a
+`STRONGLY_INFERRED`, explicitly corroborating-only signal, labeled
+`LIKELY_SHARED_TEXT_ORIGIN` and carrying a fixed disclaimer note — never
+`SAME_REUTERS_DISPATCH`, never `CONFIRMED_SAME_ORIGIN`. Comparison only
+ever happens **inside an already-narrowed, single-entity candidate
+group** — never across a whole cluster — and is skipped entirely (no
+comparison, no signal, no error) once that group exceeds
+`MAX_GROUP_SIZE_FOR_TEXT_COMPARISON` (25): a cluster where 1,000 articles
+all cite Reuters resolves to one `SHARED_REPORTING_SOURCE` group and zero
+pairwise text comparisons, not ~500,000 — a deliberate false-negative-over-
+false-positive/performance tradeoff, not an oversight.
+
+**Primary-evidence grouping stays conservative.** Phase 7B's extractor
+recognizes only generic phrases for court filings, press releases, and
+studies (no docket/document/study identifiers), so two unresolved "court
+filing" observations across different articles never become a strong
+shared-document group merely because both say "court filing" — that would
+be exactly the overclaiming this phase must avoid. `primaryEvidenceGroups`
+only groups observations that share **both** a resolved canonical entity
+**and** the same `evidenceType`; given Phase 7B's current extractor this
+correctly, honestly produces no group today (no primary-evidence
+observation currently carries a resolved entity at all — see
+`patterns.ts`), the same accepted limitation as `CONFIRMED` never being
+auto-generated. Capturing document identifiers is an explicit future
+enhancement, out of scope here.
+
+**Generic/anonymous sourcing is never merged across articles.** Role-based
+observations with no resolved entity ("police said," "officials said,"
+"a person familiar with the matter said," ...) never participate in any
+group — regardless of how closely their wording matches across articles.
+Matching text for an unresolved, non-specific role is not evidence of a
+shared reporting source.
+
+**Original reporting stays per-article.** `ORIGINAL_REPORTING_CLAIM`
+observations are surfaced as `originalReportingSignals`, one entry per
+observation — never aggregated across articles (originality is a property
+of one article/publisher's own text, not a cross-article relationship),
+and never turned into a whole-article truth claim or a publisher-quality
+score.
+
+**`mergedIntoId` dereferencing is bounded and cycle-safe.**
+`resolveCanonicalEntityId` walks a merge chain to find the entity
+observations should actually be grouped under, handling — without ever
+throwing or looping — a plain chain, a missing merge target (stops and
+uses the last resolvable id), a cycle (a visited-set check stops and
+returns the id at which the cycle was redetected — two different starting
+points inside a broken cycle can resolve to two different "canonical" ids
+rather than being incorrectly merged, a deliberate refuse-to-merge-over-
+guess choice), and a pathologically long chain (`MAX_MERGE_CHAIN_DEPTH`
+bounds the walk). It never mutates a `ProvenanceEntity` row.
+
+**Multiple metrics, never one score.** `ClusterOriginSummary` exposes
+`articleCount`, `publisherCount`, `sharedReportingSourceGroups`,
+`primaryEvidenceGroups`, `originalReportingSignals`,
+`unresolvedArticleCount`, and `provenanceCoverage` as separate, factual,
+fully-traceable fields. There is no `independentOriginCount`,
+`originScore`, `reliabilityScore`, `truthScore`, or `corroborationScore`
+anywhere — each would imply a confidence this data cannot support.
+Unresolved articles (zero persisted observations) are always counted, never
+silently dropped.
+
+**Confidence model.** `EXPLICIT` (a single observation's own directness),
+`POSSIBLE` (two or more articles explicitly cite the same resolved
+entity), `STRONGLY_INFERRED` (only the near-duplicate-text signal
+currently reaches this), and `UNKNOWN`. `CONFIRMED` is deliberately not a
+member of this set — confirming identical origin would require an
+identifier (a dispatch id, a docket number) Phase 7B's extractor does not
+capture, so this module may legitimately never produce anything above
+`STRONGLY_INFERRED` today. That is an accepted, intentional limitation.
+
+**Claim-level reasoning is explicitly out of scope.** Nothing here ever
+produces language or data equivalent to "this article is corroborated by
+Reuters and the court filing," "this fact was independently verified," or
+"X and Y confirm the same claim." Phase 8B groups provenance **signals**
+only; reasoning about individual factual claims is Phase 10's job.
+
+**Defensive observation cap (touches Phase 7B code).**
+`persistObservationsForArticle` now caps auto-generated observations at
+`MAX_OBSERVATIONS_PER_ARTICLE` (20) per `(articleId, extractorVersion)`,
+computed against what's already durably persisted (so it holds across
+separate TITLE/FEED_TEXT calls for the same article), prioritizing `HIGH`
+over `MEDIUM` while otherwise preserving textual order, idempotent on
+rerun, and never counting, deleting, or destabilizing an `ADMIN_OVERRIDE`
+row. See SECURITY.md for the threat this closes.
+
+**Database query shape.** `getClusterOriginSummary` runs exactly three
+Prisma queries regardless of cluster size: a cluster-existence check, one
+relational query for the cluster's articles with their source and
+`ProvenanceObservation` rows (a join, not an explicit article-id `IN`
+list), and one query for the full (small, by design) `ProvenanceEntity`
+table — the same "load the small table once" precedent
+`loadAliasIndex` already established. Never one query per article or per
+observation.
+
+**Explicitly not in this phase**: no persisted graph or migration, no
+public API, no UI, no claim-level reasoning, no single independent-origin
+number, no document-identifier extraction, no cross-cluster reasoning, no
+new network access, no change to clustering behavior itself. See Phase 9
+(surfacing this to users) and Phase 10 (claim-level reasoning) for what
+comes next.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate

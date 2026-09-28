@@ -22,30 +22,47 @@ const PROVENANCE_SOURCE_FILES = [
 ];
 
 /**
- * Phase 7B is a data-collection foundation only. These are hard product
- * boundaries (see ARCHITECTURE.md's Phase 7 section) — Phase 8 (the
- * source graph) is explicitly out of scope, not just deprioritized.
+ * Phase 7B is a data-collection foundation only — these are hard product
+ * boundaries for its OWN module (see ARCHITECTURE.md's Phase 7 section).
+ *
+ * Phase 8B has since been built exactly as ARCHITECTURE.md's Phase 8B
+ * section describes: a query-time-only, cluster-scoped source-group
+ * reasoning layer, living entirely in src/lib/graph/, with NO persisted
+ * graph schema. An earlier version of this suite banned the words "source
+ * graph"/"provenance graph" appearing anywhere in src/ or worker/, back
+ * when Phase 8 was entirely unbuilt and any such mention would have meant
+ * scope creep into Phase 7B's own PR. Now that Phase 8B legitimately
+ * exists as its own separate, intentionally-scoped module, that blanket
+ * word-ban would fail on Phase 8B's own (correct, in-scope) code — the
+ * assertions below test the real boundaries instead: Phase 7B's own
+ * extraction/persistence module still never grows cross-article reasoning
+ * itself, and no phase, ever, persists a source-graph schema.
  */
 describe("Phase 7B never computes cross-article independence/reliability claims", () => {
   const FORBIDDEN_CONCEPTS =
     /independent[_\s]?(source|origin)[_\s]?count|corroborat|confirmation[_\s]?count|reliability[_\s]?score|truth[_\s]?score|source[_\s]?graph|provenance[_\s]?graph|provenanceChain|independenceScore/i;
 
-  it("no provenance source file computes an independence/corroboration/reliability/graph concept", () => {
+  it("no provenance source file (Phase 7B's own extraction/persistence module) computes an independence/corroboration/reliability/graph concept", () => {
     const offenders = PROVENANCE_SOURCE_FILES.filter((file) =>
       FORBIDDEN_CONCEPTS.test(readFileSync(file, "utf8")),
     );
     expect(offenders).toEqual([]);
   });
 
-  it("no code anywhere in src/ or worker/ builds a cross-article/cross-cluster provenance graph", () => {
-    const allFiles = [
-      ...walk(join(ROOT, "src")).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx")),
-      ...walk(join(ROOT, "worker")).filter((f) => f.endsWith(".ts")),
-    ];
-    const offenders = allFiles.filter((file) =>
-      /source[_\s]?graph|provenance[_\s]?graph/i.test(readFileSync(file, "utf8")),
+  it("Phase 7B's own module never grows cross-article/source-graph reasoning itself — that lives only in src/lib/graph/ (Phase 8B)", () => {
+    const offenders = PROVENANCE_SOURCE_FILES.filter((file) =>
+      /source[_\s]?graph|provenance[_\s]?graph|sharedReportingSource|buildSourceGroups|getClusterOriginSummary/i.test(
+        readFileSync(file, "utf8"),
+      ),
     );
     expect(offenders).toEqual([]);
+  });
+
+  it("no phase ever persists a source-graph schema — no InformationOriginGroup/OriginGroupMember/SourceGraphEdge/GraphEdge/ReportingRelationship Prisma model", () => {
+    const schemaSource = read("prisma/schema.prisma");
+    const FORBIDDEN_PERSISTED_GRAPH_MODEL =
+      /model\s+(InformationOriginGroup|OriginGroupMember|SourceGraphEdge|GraphEdge|ReportingRelationship)\b/;
+    expect(schemaSource).not.toMatch(FORBIDDEN_PERSISTED_GRAPH_MODEL);
   });
 });
 
@@ -81,6 +98,53 @@ describe("Phase 7B exposes no public API and no admin UI for provenance data", (
     ];
     const offenders = uiFiles.filter((file) =>
       /provenanceObservation|ProvenanceEntity|ProvenanceAlias/.test(readFileSync(file, "utf8")),
+    );
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * Phase 8B's source-group/origin-reasoning layer (src/lib/graph/) is an
+ * INTERNAL service only — getClusterOriginSummary is called directly by
+ * server code, never exposed as a route or rendered anywhere. Phase 9 will
+ * eventually call it directly; this suite locks that "not yet" boundary.
+ */
+describe("Phase 8B exposes no public API and no UI for source-group/origin data", () => {
+  it("no API route file exists under /api/graph or /api/provenance", () => {
+    const apiFiles = walk(join(ROOT, "src/app/api")).filter((f) => f.endsWith(".ts"));
+    const offenders = apiFiles.filter((file) => /[\\/]api[\\/](graph|provenance)[\\/]/.test(file));
+    expect(offenders).toEqual([]);
+  });
+
+  it("no API route file references the graph module", () => {
+    const apiFiles = walk(join(ROOT, "src/app/api")).filter((f) => f.endsWith(".ts"));
+    const offenders = apiFiles.filter((file) =>
+      /getClusterOriginSummary|buildSourceGroups|SharedReportingSourceGroup|ClusterOriginSummary/.test(
+        readFileSync(file, "utf8"),
+      ),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("no UI component (story/source-facing or admin) references the graph module", () => {
+    const uiFiles = [
+      ...walk(join(ROOT, "src/components")).filter((f) => f.endsWith(".tsx")),
+      ...walk(join(ROOT, "src/app")).filter((f) => f.endsWith(".tsx")),
+    ];
+    const offenders = uiFiles.filter((file) =>
+      /getClusterOriginSummary|buildSourceGroups|SharedReportingSourceGroup|ClusterOriginSummary/.test(
+        readFileSync(file, "utf8"),
+      ),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("src/lib/graph/ never imports anything from src/app (no route/UI wiring in the other direction either)", () => {
+    const graphFiles = walk(join(ROOT, "src/lib/graph")).filter(
+      (f) => f.endsWith(".ts") && !f.endsWith(".test.ts"),
+    );
+    const offenders = graphFiles.filter((file) =>
+      /from\s+["']@\/app\//.test(readFileSync(file, "utf8")),
     );
     expect(offenders).toEqual([]);
   });
