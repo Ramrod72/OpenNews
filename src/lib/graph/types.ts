@@ -126,6 +126,18 @@ export interface SharedReportingSourceGroup {
   groupType: "SHARED_REPORTING_SOURCE";
   entityId: string;
   entityCanonicalName: string;
+  /**
+   * Distinguishes two different kinds of "shared" citation, neither
+   * stronger than the other: WIRE_SERVICE/NEWS_OUTLET means the articles
+   * cite a reporting intermediary (Reuters, AP, another outlet).
+   * GOVERNMENT_AGENCY/COURT/LAW_ENFORCEMENT/COMPANY/RESEARCH_INSTITUTION/
+   * INDIVIDUAL means the articles instead cite the same PRIMARY SOURCE/
+   * newsmaker directly (e.g. two articles both quoting the same DOJ
+   * statement) — routine and, if anything, an even weaker signal, since
+   * many outlets independently attending the same press conference is
+   * completely unremarkable. A consumer must not treat every group here
+   * as a reporting-intermediary relationship without checking this field.
+   */
   entityType: ProvenanceEntityType;
   /** POSSIBLE for the base same-entity relationship; never CONFIRMED. */
   confidence: SourceGroupConfidence;

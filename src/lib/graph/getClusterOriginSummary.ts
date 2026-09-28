@@ -8,6 +8,7 @@ import {
   type ObservationForGrouping,
 } from "./buildSourceGroups";
 import type { ClusterOriginSummary } from "./types";
+import { EXTRACTOR_VERSION } from "@/lib/provenance/persistObservations";
 import type {
   PersistableConfidence,
   ProvenanceEntityType,
@@ -46,6 +47,28 @@ import type {
  * completely ordinary and never, by itself, upgraded to a stronger claim
  * anywhere in this module.
  *
+ * IMPORTANT — extractorVersion is never silently mixed: only the CURRENT
+ * EXTRACTOR_VERSION's auto-generated observations (plus any ADMIN_OVERRIDE
+ * row, regardless of its version tag) are loaded. An article that hasn't
+ * been reprocessed since the last extractor version bump is treated the
+ * same as an article with no provenance at all here — its stale rows are
+ * excluded, not blended in with fresh ones from other articles in the same
+ * cluster.
+ *
+ * IMPORTANT — entityType distinguishes two different kinds of "shared"
+ * citation, and neither is a stronger claim than the other: a
+ * WIRE_SERVICE/NEWS_OUTLET group means the articles cite a reporting
+ * intermediary (Reuters, AP, another outlet). A GOVERNMENT_AGENCY/COURT/
+ * LAW_ENFORCEMENT/COMPANY/RESEARCH_INSTITUTION/INDIVIDUAL group instead
+ * means the articles cite the same PRIMARY SOURCE/newsmaker directly (e.g.
+ * two articles both quoting the same DOJ statement) — routine, ordinary,
+ * and, if anything, an even weaker signal than a wire-service citation,
+ * since many outlets independently attending the same press conference or
+ * receiving the same public statement is completely unremarkable. Callers
+ * must inspect `entityType` rather than assuming every
+ * SHARED_REPORTING_SOURCE group represents a reporting-intermediary
+ * relationship.
+ *
  * Bounded query shape: exactly three Prisma queries regardless of cluster
  * size — (1) a point lookup confirming the cluster exists, (2) one query
  * for the cluster's articles with their source name, excerpt, and
@@ -74,7 +97,21 @@ export async function getClusterOriginSummary(
       sourceId: true,
       excerpt: true,
       source: { select: { id: true, name: true } },
+      // Only the CURRENT extractor version's auto-generated rows, plus any
+      // ADMIN_OVERRIDE row regardless of its version tag — the same
+      // exclusion Phase 7B's own clearStaleObservations() applies before
+      // reprocessing. Without this filter, an article not yet reprocessed
+      // after an extractorVersion bump would keep contributing stale
+      // (possibly since-corrected) observations indefinitely, silently
+      // mixed in with fresh ones from other articles in the same cluster —
+      // exactly the "misleading intelligence" this module must avoid. An
+      // ADMIN_OVERRIDE row is never excluded by this filter: a human
+      // correction must always be visible here, whatever extractorVersion
+      // string it happens to carry.
       provenanceObservations: {
+        where: {
+          OR: [{ extractorVersion: EXTRACTOR_VERSION }, { reviewState: "ADMIN_OVERRIDE" }],
+        },
         select: {
           id: true,
           articleId: true,

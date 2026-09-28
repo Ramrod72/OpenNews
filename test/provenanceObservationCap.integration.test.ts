@@ -282,3 +282,34 @@ describe("Phase 8B — S: ADMIN_OVERRIDE rows survive the cap and are never touc
     expect(overrideRows[0]!.rawEntityText).toBe("manually corrected source");
   });
 });
+
+describe("Phase 8B adversarial review — L: concurrent calls for the same article never collectively exceed the cap", () => {
+  it("two concurrent persistObservationsForArticle calls for the same article/version stay within the cap (e.g. an overlapping live-ingestion + manually-triggered backfill touching the same article)", async () => {
+    const articleId = await makeArticle();
+
+    // Two DIFFERENT extraction sources (as a real overlap would produce),
+    // each independently under the cap (15 < 20), but together (30) would
+    // overshoot it if the budget check weren't transactionally atomic with
+    // the writes that consume it.
+    const [r1, r2] = await Promise.all([
+      persistObservationsForArticle(prisma, {
+        articleId,
+        text: policeSaidFlood(15),
+        extractionSource: "FEED_TEXT",
+        publisherName: "Test Provenance Cap Source",
+        aliasIndex,
+      }),
+      persistObservationsForArticle(prisma, {
+        articleId,
+        text: policeSaidFlood(15).replace(/incident number (\d+)/g, "incident case $1"), // distinct offsets/text so dedupeKeys differ from the first call
+        extractionSource: "TITLE",
+        publisherName: "Test Provenance Cap Source",
+        aliasIndex,
+      }),
+    ]);
+
+    const rows = await prisma.provenanceObservation.findMany({ where: { articleId } });
+    expect(rows.length).toBeLessThanOrEqual(MAX_OBSERVATIONS_PER_ARTICLE);
+    expect(r1.persisted + r2.persisted).toBe(rows.length);
+  });
+});

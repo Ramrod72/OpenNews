@@ -345,6 +345,28 @@ adversarial flood of hundreds of repeated phrases, an exactly-one-over-the-
 limit case, HIGH-vs-MEDIUM prioritization at the boundary, and
 `ADMIN_OVERRIDE` survival (`test/provenanceObservationCap.integration.test.ts`).
 
+The budget check (reading what's already persisted) and the writes that
+consume that budget run inside one `prisma.$transaction`, closing a
+concurrency gap a subsequent adversarial review found: without this, two
+concurrent calls for the same `(articleId, extractorVersion)` could each
+read the same stale pre-write count and collectively persist well past the
+cap (empirically confirmed: two concurrent calls, 15 candidates each,
+collectively wrote 30 rows before this fix). The realistic worst case this
+codebase's own call sites can produce — two concurrent calls on the same
+article, e.g. live ingestion overlapping a manually-triggered backfill
+touching the same article — is now regression-tested and holds reliably.
+At artificially higher concurrency (5+ simultaneous calls on the same
+article, not reachable through any current call site), SQLite's
+single-writer contention can hit the transaction's timeout; every racing
+call then rejects outright rather than the cap being violated, and every
+caller already isolates this per-article/per-call (`ingestSource.ts`'s
+`extractAndPersistProvenance`, `backfill-provenance.ts`'s
+`processArticle`, both pre-existing Phase 7B try/catch boundaries), so
+that failure mode is fail-closed, never a crash, and never a cap
+violation — an accepted residual risk given SQLite's concurrency model,
+explicitly not addressed with a schema/architecture change per this
+phase's locked scope.
+
 **Source-group / origin-reasoning foundation (Phase 8B).**
 `src/lib/graph/` (`getClusterOriginSummary`, `buildSourceGroups`,
 `excerptSimilarity`) introduces **zero new outbound network fetches** —
@@ -381,6 +403,19 @@ There is still no public API or UI for any of this: no `/api/graph`, no
 `/api/provenance`, no admin page, no story-facing component — a dedicated
 boundary test (`test/provenanceBoundary.test.ts`) scans for exactly this,
 the same pattern Phase 7B's own exposure boundary uses.
+
+`getClusterOriginSummary` only ever loads the current extractor version's
+auto-generated observations (plus any `ADMIN_OVERRIDE` row regardless of
+version), never mixing in stale rows from before an extractor version
+bump that an article hasn't been reprocessed since — closing a data-
+integrity gap an adversarial review found (a stale, possibly-since-
+corrected observation could otherwise be silently blended into a fresh
+group alongside other articles). Near-duplicate excerpt comparison also
+excludes any excerpt normalizing to fewer than `MIN_WORDS_FOR_COMPARISON`
+(8) words, closing a false-positive risk the same review found: two
+merely coincidentally-identical short/boilerplate excerpts (e.g. both a
+malformed "Breaking News" placeholder) would otherwise score a perfect
+1.0 similarity from almost no real evidence.
 
 ## Dependency scanning
 

@@ -40,6 +40,19 @@ export const NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.6;
  */
 export const MAX_GROUP_SIZE_FOR_TEXT_COMPARISON = 25;
 
+/**
+ * Minimum normalized word count an excerpt must have before it's even
+ * considered for near-duplicate comparison. Below the shingle size, two
+ * short excerpts collapse to a single whole-text "shingle" each — so two
+ * merely coincidentally-identical short fragments (a malformed/boilerplate
+ * excerpt like "Breaking News" or "Read more.") would otherwise score a
+ * perfect 1.0 similarity from almost no real evidence, a genuine false-
+ * positive risk under the false-negative-over-false-positive policy. Set
+ * comfortably above SHINGLE_SIZE so a real comparison has enough distinct
+ * shingles to be meaningful, not just one degenerate whole-text shingle.
+ */
+export const MIN_WORDS_FOR_COMPARISON = 8;
+
 function normalizeToWords(text: string): string[] {
   return text
     .toLowerCase()
@@ -94,6 +107,10 @@ export interface NearDuplicatePair {
   similarity: number;
 }
 
+function normalizedWordCount(text: string): number {
+  return normalizeToWords(text).length;
+}
+
 /**
  * All pairs within ONE already-narrowed candidate group whose excerpts
  * clear NEAR_DUPLICATE_SIMILARITY_THRESHOLD. Deterministic output order
@@ -102,13 +119,23 @@ export interface NearDuplicatePair {
  * function's ONLY job in keeping the whole module's near-duplicate-text
  * analysis linear in total article count: callers must never call this
  * across a whole cluster, only within a pre-partitioned group (see
- * buildSourceGroups.ts).
+ * buildSourceGroups.ts). A candidate whose excerpt normalizes to fewer
+ * than MIN_WORDS_FOR_COMPARISON words is excluded from comparison
+ * entirely (never paired, never flagged) — this is a policy decision
+ * about what's trustworthy enough to surface as a signal, kept separate
+ * from excerptJaccardSimilarity's own general-purpose, length-agnostic
+ * similarity math.
  */
 export function findNearDuplicatePairs(
   candidates: ExcerptCandidate[],
   threshold: number = NEAR_DUPLICATE_SIMILARITY_THRESHOLD,
 ): NearDuplicatePair[] {
-  const withText = candidates.filter((c) => c.excerpt && c.excerpt.trim().length > 0);
+  const withText = candidates.filter(
+    (c) =>
+      c.excerpt &&
+      c.excerpt.trim().length > 0 &&
+      normalizedWordCount(c.excerpt) >= MIN_WORDS_FOR_COMPARISON,
+  );
   if (withText.length > MAX_GROUP_SIZE_FOR_TEXT_COMPARISON) return [];
 
   const pairs: NearDuplicatePair[] = [];

@@ -116,6 +116,32 @@ describe("A/D — shared reporting source groups", () => {
     });
     expect(groups).toEqual([]);
   });
+
+  it("adversarial review — one article with TWO separate Reuters observations does not create a multi-article group by itself", () => {
+    const articles = [article("a1")];
+    const observations = [
+      obs({
+        id: "o1",
+        articleId: "a1",
+        entityId: REUTERS.id,
+        evidenceText: "Reuters reported the first detail",
+      }),
+      obs({
+        id: "o2",
+        articleId: "a1",
+        entityId: REUTERS.id,
+        evidenceText: "Reuters also reported a second detail",
+      }),
+    ];
+    const groups = buildSharedReportingSourceGroups({
+      articles,
+      observations,
+      entities: [REUTERS],
+    });
+    // Two observations, but only ONE distinct article — "shared" requires
+    // sharing ACROSS articles, not merely existing more than once.
+    expect(groups).toEqual([]);
+  });
 });
 
 describe("E/F/T — generic/role-based/anonymous observations are never merged across articles", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_GROUP_SIZE_FOR_TEXT_COMPARISON,
+  MIN_WORDS_FOR_COMPARISON,
   NEAR_DUPLICATE_SIMILARITY_THRESHOLD,
   excerptJaccardSimilarity,
   findNearDuplicatePairs,
@@ -49,6 +50,40 @@ describe("excerptJaccardSimilarity", () => {
     const a = "Reuters said the deal was finalized on Monday.";
     const b = "REUTERS SAID THE DEAL WAS FINALIZED ON MONDAY!!!";
     expect(excerptJaccardSimilarity(a, b)).toBe(1);
+  });
+});
+
+describe("findNearDuplicatePairs — short/degenerate excerpts never produce a false-positive match", () => {
+  it("does not flag two coincidentally-identical short/boilerplate excerpts as near-duplicates", () => {
+    // Below shingle size, a short excerpt collapses to one whole-text
+    // "shingle" — two such short fragments that happen to be identical
+    // (e.g. a malformed feed leaving only a placeholder) would otherwise
+    // score a perfect 1.0 similarity from almost no real evidence.
+    const pairs = findNearDuplicatePairs([
+      { articleId: "a1", excerpt: "Breaking News" },
+      { articleId: "a2", excerpt: "Breaking News" },
+    ]);
+    expect(pairs).toEqual([]);
+  });
+
+  it("still compares real excerpts right at MIN_WORDS_FOR_COMPARISON", () => {
+    const words = Array.from({ length: MIN_WORDS_FOR_COMPARISON }, (_, i) => `word${i}`).join(" ");
+    const pairs = findNearDuplicatePairs([
+      { articleId: "a1", excerpt: words },
+      { articleId: "a2", excerpt: words },
+    ]);
+    expect(pairs).toHaveLength(1);
+  });
+
+  it("excludes an excerpt one word short of MIN_WORDS_FOR_COMPARISON even if otherwise identical", () => {
+    const words = Array.from({ length: MIN_WORDS_FOR_COMPARISON - 1 }, (_, i) => `word${i}`).join(
+      " ",
+    );
+    const pairs = findNearDuplicatePairs([
+      { articleId: "a1", excerpt: words },
+      { articleId: "a2", excerpt: words },
+    ]);
+    expect(pairs).toEqual([]);
   });
 });
 

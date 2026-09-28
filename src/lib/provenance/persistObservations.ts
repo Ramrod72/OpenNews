@@ -120,6 +120,18 @@ export interface PersistObservationsResult {
  * reach this function more than once (TITLE then FEED_TEXT at ingestion;
  * TITLE then STORED_EXCERPT_BACKFILL during backfill), and the cap must
  * hold regardless of how the text was split across those calls.
+ *
+ * Concurrency: the budget check (read existing count) and the writes that
+ * consume it run inside one `prisma.$transaction`, so two concurrent calls
+ * for the SAME (articleId, extractorVersion) — e.g. a live-ingestion call
+ * racing a manually-triggered backfill touching the same article — cannot
+ * both read a stale pre-write count and collectively overshoot the cap:
+ * the database serializes the two transactions (SQLite has a single
+ * writer; Postgres uses standard row/transaction isolation), so the
+ * second transaction's read only commits after the first transaction's
+ * writes are visible. Extraction itself (the pure, non-DB work above) is
+ * NOT inside the transaction — only the count-and-write section is —
+ * keeping the transaction's own work small.
  */
 export async function persistObservationsForArticle(
   prisma: PrismaClient,
@@ -164,69 +176,73 @@ export async function persistObservationsForArticle(
     }),
   }));
 
-  // Budget is computed against what's ALREADY durably persisted for this
-  // article+version (excluding ADMIN_OVERRIDE, which never counts against
-  // or is affected by this cap). A candidate whose dedupeKey already
-  // exists doesn't consume fresh budget — it's the same row being
-  // idempotently re-upserted, not a new one, so a rerun of an
-  // already-at-cap article never starts silently dropping previously-kept
-  // rows.
-  const existingRows = await prisma.provenanceObservation.findMany({
-    where: {
-      articleId: params.articleId,
-      extractorVersion,
-      reviewState: { not: "ADMIN_OVERRIDE" },
-    },
-    select: { dedupeKey: true },
-  });
-  const existingKeys = new Set(existingRows.map((row) => row.dedupeKey));
-  let budget = Math.max(0, MAX_OBSERVATIONS_PER_ARTICLE - existingRows.length);
-
   let persisted = 0;
   let cappedByLimit = 0;
 
-  for (const { observation, dedupeKey } of prioritized) {
-    const alreadyPersisted = existingKeys.has(dedupeKey);
-    if (!alreadyPersisted) {
-      if (budget <= 0) {
-        cappedByLimit += 1;
-        continue;
-      }
-      budget -= 1;
-    }
+  await prisma.$transaction(async (tx) => {
+    // Budget is computed against what's ALREADY durably persisted for this
+    // article+version (excluding ADMIN_OVERRIDE, which never counts against
+    // or is affected by this cap). A candidate whose dedupeKey already
+    // exists doesn't consume fresh budget — it's the same row being
+    // idempotently re-upserted, not a new one, so a rerun of an
+    // already-at-cap article never starts silently dropping previously-kept
+    // rows. Reading this INSIDE the transaction (rather than before it) is
+    // what closes the concurrent-call race described above.
+    const existingRows = await tx.provenanceObservation.findMany({
+      where: {
+        articleId: params.articleId,
+        extractorVersion,
+        reviewState: { not: "ADMIN_OVERRIDE" },
+      },
+      select: { dedupeKey: true },
+    });
+    const existingKeys = new Set(existingRows.map((row) => row.dedupeKey));
+    let budget = Math.max(0, MAX_OBSERVATIONS_PER_ARTICLE - existingRows.length);
 
-    try {
-      // dedupeKey already encodes every field that would otherwise change,
-      // so a rerun's "update" branch is a deliberate no-op — this makes
-      // repeated worker/backfill runs safe without duplicating rows, the
-      // same unique-constraint-based idempotency pattern Article.urlHash
-      // already establishes (src/lib/ingest/ingestSource.ts).
-      await prisma.provenanceObservation.upsert({
-        where: { dedupeKey },
-        create: {
-          articleId: params.articleId,
-          entityId: observation.resolvedEntity?.entityId ?? null,
-          rawEntityText: observation.rawEntityText,
-          relationshipType: observation.relationshipType,
-          evidenceType: observation.evidenceType,
-          confidence: observation.confidence,
-          evidenceText: observation.evidenceText,
-          extractionSource: params.extractionSource,
-          startOffset: observation.startOffset,
-          endOffset: observation.endOffset,
-          extractorVersion,
-          dedupeKey,
-        },
-        update: {},
-      });
-      persisted += 1;
-    } catch (err) {
-      console.error(
-        `[provenance] failed to persist observation for article ${params.articleId}:`,
-        err,
-      );
+    for (const { observation, dedupeKey } of prioritized) {
+      const alreadyPersisted = existingKeys.has(dedupeKey);
+      if (!alreadyPersisted) {
+        if (budget <= 0) {
+          cappedByLimit += 1;
+          continue;
+        }
+        budget -= 1;
+      }
+
+      try {
+        // dedupeKey already encodes every field that would otherwise
+        // change, so a rerun's "update" branch is a deliberate no-op —
+        // this makes repeated worker/backfill runs safe without
+        // duplicating rows, the same unique-constraint-based idempotency
+        // pattern Article.urlHash already establishes
+        // (src/lib/ingest/ingestSource.ts).
+        await tx.provenanceObservation.upsert({
+          where: { dedupeKey },
+          create: {
+            articleId: params.articleId,
+            entityId: observation.resolvedEntity?.entityId ?? null,
+            rawEntityText: observation.rawEntityText,
+            relationshipType: observation.relationshipType,
+            evidenceType: observation.evidenceType,
+            confidence: observation.confidence,
+            evidenceText: observation.evidenceText,
+            extractionSource: params.extractionSource,
+            startOffset: observation.startOffset,
+            endOffset: observation.endOffset,
+            extractorVersion,
+            dedupeKey,
+          },
+          update: {},
+        });
+        persisted += 1;
+      } catch (err) {
+        console.error(
+          `[provenance] failed to persist observation for article ${params.articleId}:`,
+          err,
+        );
+      }
     }
-  }
+  });
 
   return { persisted, discardedLow, cappedByLimit };
 }

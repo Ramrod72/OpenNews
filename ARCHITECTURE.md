@@ -693,6 +693,27 @@ over `MEDIUM` while otherwise preserving textual order, idempotent on
 rerun, and never counting, deleting, or destabilizing an `ADMIN_OVERRIDE`
 row. See SECURITY.md for the threat this closes.
 
+The budget check and the writes that consume it run inside one
+`prisma.$transaction`, closing a real race an adversarial review of this
+phase found: without it, two concurrent calls for the same
+`(articleId, extractorVersion)` (e.g. live ingestion overlapping a
+manually-triggered backfill touching the same article) could each read the
+same pre-write count and collectively write well past the cap — verified
+directly (two concurrent calls each 15-under-cap collectively wrote 30
+rows before the fix; 0 after). The realistic worst case this codebase's
+own call sites can produce is two concurrent calls per article, which is
+now regression-tested and reliable. At meaningfully higher, synthetic
+concurrency (5+ simultaneous calls for the same article — not reachable
+through any current call site, since ingestion is sequential per article
+and backfill's own concurrency is always across _different_ articles),
+SQLite's single-writer contention can hit the transaction's timeout; every
+racing call then rejects rather than the cap being violated, and every
+caller of `persistObservationsForArticle` already wraps it in a try/catch
+(`ingestSource.ts`, `backfill-provenance.ts`), so that failure mode is
+fail-closed and isolated, never a crash and never a cap violation — an
+accepted residual risk given current call patterns, not something this
+phase's architecture (SQLite, no new schema) can fully eliminate.
+
 **Database query shape.** `getClusterOriginSummary` runs exactly three
 Prisma queries regardless of cluster size: a cluster-existence check, one
 relational query for the cluster's articles with their source and
@@ -702,12 +723,55 @@ table — the same "load the small table once" precedent
 `loadAliasIndex` already established. Never one query per article or per
 observation.
 
+**extractorVersion is never silently mixed.** The `ProvenanceObservation`
+query only loads the current `EXTRACTOR_VERSION`'s auto-generated rows,
+plus any `ADMIN_OVERRIDE` row regardless of its own version tag — mirroring
+`clearStaleObservations`'s own exclusion rule. An article not yet
+reprocessed after an extractor version bump is treated the same as an
+article with no provenance at all here, rather than having its
+possibly-since-corrected stale observations blended in with fresh ones
+from other articles in the same cluster.
+
+**`entityType` distinguishes two different kinds of "shared" citation.** A
+`WIRE_SERVICE`/`NEWS_OUTLET` `SharedReportingSourceGroup` means the
+articles cite a reporting intermediary (Reuters, AP, another outlet). A
+`GOVERNMENT_AGENCY`/`COURT`/`LAW_ENFORCEMENT`/`COMPANY`/
+`RESEARCH_INSTITUTION`/`INDIVIDUAL` group instead means the articles cite
+the same primary source/newsmaker directly (e.g. two articles both quoting
+the same DOJ statement) — routine, and if anything an even weaker signal
+than a wire-service citation, since many outlets independently attending
+the same press conference is completely unremarkable. Both are grouped the
+same way (same resolved entity, `POSSIBLE` confidence) because both are
+honestly the same underlying fact ("these articles cite this entity"), but
+a consumer must inspect `entityType` rather than assuming every group
+represents a reporting-intermediary relationship.
+
+**Near-duplicate comparison ignores excerpts too short to be meaningful.**
+Below `MIN_WORDS_FOR_COMPARISON` (8) words, an excerpt is excluded from
+near-duplicate comparison entirely. Word-shingling degenerates for very
+short text (a short excerpt collapses to a single whole-text "shingle"),
+so two merely coincidentally-identical short fragments — a malformed feed
+leaving only a placeholder like "Breaking News" — would otherwise score a
+perfect 1.0 similarity from almost no real evidence; found and fixed
+during adversarial review.
+
 **Explicitly not in this phase**: no persisted graph or migration, no
 public API, no UI, no claim-level reasoning, no single independent-origin
 number, no document-identifier extraction, no cross-cluster reasoning, no
 new network access, no change to clustering behavior itself. See Phase 9
 (surfacing this to users) and Phase 10 (claim-level reasoning) for what
 comes next.
+
+**Known Phase 8B limitations**: a `mergedIntoId` chain longer than
+`MAX_MERGE_CHAIN_DEPTH` (25 hops — far beyond any realistic admin merge
+activity given Phase 7B's tiny seed entity set) can truncate before
+reaching the true root, which would split what should be one group into
+several rather than merging them — a false-negative, never a false
+merge, consistent with this phase's precision policy. Shingle-based
+similarity is English/space-delimited-language-oriented; a
+space-delimited language degrades gracefully, while a script with no
+inter-word spaces (e.g. CJK text) collapses toward exact-match-only
+comparison — again a false-negative direction, never overclaiming.
 
 ## Known limitations / natural next steps
 

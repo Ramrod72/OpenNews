@@ -461,3 +461,122 @@ describe("getClusterOriginSummary makes no mutation and no network request", () 
     await expect(getClusterOriginSummary(prisma, "does-not-exist")).rejects.toThrow();
   });
 });
+
+describe("adversarial review — empty/minimal cluster states", () => {
+  it("a cluster with zero articles returns an all-zero summary, not an error", async () => {
+    const clusterId = await makeCluster();
+    const summary = await getClusterOriginSummary(prisma, clusterId);
+    expect(summary.articleCount).toBe(0);
+    expect(summary.publisherCount).toBe(0);
+    expect(summary.sharedReportingSourceGroups).toEqual([]);
+    expect(summary.primaryEvidenceGroups).toEqual([]);
+    expect(summary.originalReportingSignals).toEqual([]);
+    expect(summary.unresolvedArticleCount).toBe(0);
+    expect(summary.provenanceCoverage).toEqual({
+      articlesWithDetectedProvenance: 0,
+      articlesWithoutDetectedProvenance: 0,
+    });
+  });
+
+  it("a cluster with exactly one article (with provenance) never fabricates a shared-source group", async () => {
+    const clusterId = await makeCluster();
+    const a1 = await makeArticle(clusterId);
+    await persistObservationsForArticle(prisma, {
+      articleId: a1,
+      text: "Reuters reported the negotiations concluded successfully overnight.",
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Cluster Origin Source",
+      aliasIndex,
+    });
+
+    const summary = await getClusterOriginSummary(prisma, clusterId);
+    expect(summary.articleCount).toBe(1);
+    expect(summary.sharedReportingSourceGroups).toEqual([]);
+    expect(summary.unresolvedArticleCount).toBe(0);
+  });
+});
+
+describe("adversarial review — extractorVersion is never silently mixed", () => {
+  it("excludes a stale-extractorVersion auto-generated observation from grouping, while including a current-version one from another article", async () => {
+    const clusterId = await makeCluster();
+    const a1 = await makeArticle(clusterId);
+    const a2 = await makeArticle(clusterId);
+
+    // a1 has a STALE-version auto-generated Reuters observation (as if the
+    // extractor was bumped and this article hasn't been reprocessed yet).
+    await prisma.provenanceObservation.create({
+      data: {
+        articleId: a1,
+        entityId: reutersEntityId,
+        rawEntityText: "Reuters",
+        relationshipType: "CITES_WIRE_SERVICE",
+        evidenceType: "REPORTING_CITATION",
+        confidence: "HIGH",
+        evidenceText: "Reuters reported (stale extraction)",
+        extractionSource: "FEED_TEXT",
+        startOffset: 0,
+        endOffset: 7,
+        extractorVersion: "attribution-regex@0-old",
+        dedupeKey: `stale-version-${a1}`,
+      },
+    });
+    // a2 has a CURRENT-version Reuters observation via real extraction.
+    await persistObservationsForArticle(prisma, {
+      articleId: a2,
+      text: "Reuters reported the negotiations concluded successfully overnight.",
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Cluster Origin Source",
+      aliasIndex,
+    });
+
+    const summary = await getClusterOriginSummary(prisma, clusterId);
+    // Only ONE article has a current-version observation — not "shared",
+    // and a1's stale row must never be silently blended in to make it look
+    // like two articles corroborate each other.
+    expect(summary.sharedReportingSourceGroups).toEqual([]);
+    expect(summary.provenanceCoverage.articlesWithDetectedProvenance).toBe(1);
+    expect(summary.provenanceCoverage.articlesWithoutDetectedProvenance).toBe(1);
+  });
+
+  it("an ADMIN_OVERRIDE row is always included regardless of its own extractorVersion tag", async () => {
+    const clusterId = await makeCluster();
+    const a1 = await makeArticle(clusterId);
+    const a2 = await makeArticle(clusterId);
+
+    // a1's ADMIN_OVERRIDE row carries an OLD extractorVersion tag (as it
+    // would if it was manually corrected before a later version bump) —
+    // it must still count as detected provenance and still be groupable.
+    await prisma.provenanceObservation.create({
+      data: {
+        articleId: a1,
+        entityId: reutersEntityId,
+        rawEntityText: "Reuters",
+        relationshipType: "CITES_WIRE_SERVICE",
+        evidenceType: "REPORTING_CITATION",
+        confidence: "HIGH",
+        evidenceText: "Reuters reported (admin-corrected, old version tag)",
+        extractionSource: "FEED_TEXT",
+        startOffset: 0,
+        endOffset: 7,
+        extractorVersion: "attribution-regex@0-old",
+        reviewState: "ADMIN_OVERRIDE",
+        dedupeKey: `admin-override-old-version-${a1}`,
+      },
+    });
+    await persistObservationsForArticle(prisma, {
+      articleId: a2,
+      text: "Reuters reported the negotiations concluded successfully overnight.",
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Cluster Origin Source",
+      aliasIndex,
+    });
+
+    const summary = await getClusterOriginSummary(prisma, clusterId);
+    const reutersGroup = summary.sharedReportingSourceGroups.find(
+      (g) => g.entityCanonicalName === "Reuters",
+    );
+    expect(reutersGroup).toBeDefined();
+    expect(reutersGroup?.articleIds.sort()).toEqual([a1, a2].sort());
+    expect(summary.provenanceCoverage.articlesWithDetectedProvenance).toBe(2);
+  });
+});
