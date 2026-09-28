@@ -39,7 +39,12 @@ What's in scope:
 - Provenance extraction (Phase 7B) expanding the SSRF/network attack
   surface; a corrupted/hand-edited alias or observation row degrading into
   an unbounded content-retention path; a low-confidence guess being
-  persisted or presented as established provenance.
+  persisted or presented as established provenance; a flood of repeated
+  attribution phrases in one article inflating that table without bound.
+- Source-group/origin-reasoning (Phase 8B) expanding the network attack
+  surface, ever persisting a graph, or degrading into unbounded pairwise
+  comparison work as a cluster grows; shared-source grouping being
+  mistaken for, or presented as, proof of identical origin.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -323,6 +328,94 @@ scans `src/app/api`, `src/app/admin`, and every UI component for exactly
 this. There is consequently no new admin-authorization or public-exposure
 surface for this data to audit yet; that arrives with whichever future
 phase adds the first read path.
+
+**Defensive observation cap (Phase 8B).** `persistObservationsForArticle`
+now enforces a hard maximum of `MAX_OBSERVATIONS_PER_ARTICLE` (20)
+auto-generated `ProvenanceObservation` rows per `(articleId,
+extractorVersion)`, regardless of how many separate calls the same article
+receives (title, then feed text, at ingestion). Without this, a hostile or
+malformed feed item that repeats an attribution phrase hundreds or
+thousands of times would have passed every existing confidence/dedupe
+guard and still written one row per repetition, unboundedly inflating this
+table for a single article — a resource-exhaustion vector this phase
+closes. The cap is idempotent (a rerun re-upserts the same already-kept
+rows rather than consuming fresh budget) and never counts, deletes, or
+otherwise touches an `ADMIN_OVERRIDE` row; regression-tested with an
+adversarial flood of hundreds of repeated phrases, an exactly-one-over-the-
+limit case, HIGH-vs-MEDIUM prioritization at the boundary, and
+`ADMIN_OVERRIDE` survival (`test/provenanceObservationCap.integration.test.ts`).
+
+The budget check (reading what's already persisted) and the writes that
+consume that budget run inside one `prisma.$transaction`, closing a
+concurrency gap a subsequent adversarial review found: without this, two
+concurrent calls for the same `(articleId, extractorVersion)` could each
+read the same stale pre-write count and collectively persist well past the
+cap (empirically confirmed: two concurrent calls, 15 candidates each,
+collectively wrote 30 rows before this fix). The realistic worst case this
+codebase's own call sites can produce — two concurrent calls on the same
+article, e.g. live ingestion overlapping a manually-triggered backfill
+touching the same article — is now regression-tested and holds reliably.
+At artificially higher concurrency (5+ simultaneous calls on the same
+article, not reachable through any current call site), SQLite's
+single-writer contention can hit the transaction's timeout; every racing
+call then rejects outright rather than the cap being violated, and every
+caller already isolates this per-article/per-call (`ingestSource.ts`'s
+`extractAndPersistProvenance`, `backfill-provenance.ts`'s
+`processArticle`, both pre-existing Phase 7B try/catch boundaries), so
+that failure mode is fail-closed, never a crash, and never a cap
+violation — an accepted residual risk given SQLite's concurrency model,
+explicitly not addressed with a schema/architecture change per this
+phase's locked scope.
+
+**Source-group / origin-reasoning foundation (Phase 8B).**
+`src/lib/graph/` (`getClusterOriginSummary`, `buildSourceGroups`,
+`excerptSimilarity`) introduces **zero new outbound network fetches** —
+every function in this namespace is a pure, in-memory computation over
+data Phase 7B already persisted, or a bounded read-only Prisma query
+against it. It never fetches anything, never parses raw HTML, and never
+touches `assertPublicHttpUrl`; this is enforced by a dedicated boundary
+test alongside Phase 7B's own network-boundary tests. It also introduces
+**no persisted graph**: there is no new Prisma model, no migration, and no
+`InformationOriginGroup`/`OriginGroupMember`/`SourceGraphEdge`/`GraphEdge`/
+`ReportingRelationship` table — every `ClusterOriginSummary` is derived
+fresh, at query time, from a `StoryCluster`'s current article/observation
+state, and calling `getClusterOriginSummary` mutates nothing (regression-
+tested by snapshotting row counts before/after the call).
+
+Query shape is deliberately bounded and independent of cluster size:
+exactly three Prisma queries per call (a cluster-existence point lookup,
+one relational query for the cluster's articles with their source and
+`ProvenanceObservation` rows, and one query for the full — small, by
+design — `ProvenanceEntity` table), never one query per article or per
+observation, and never an explicit article-id `IN` list where a relational
+join already does the work. Near-duplicate-excerpt comparison
+(`excerptSimilarity.ts`) never compares every article pair in a cluster: it
+only runs inside an already-narrowed, single-entity candidate group, and
+is skipped entirely (returning no signal, never throwing or hanging) once
+that group exceeds `MAX_GROUP_SIZE_FOR_TEXT_COMPARISON` (25) — a
+1,000-article cluster that all cites Reuters resolves to one group and
+zero pairwise comparisons rather than ~500,000. `mergedIntoId` chain
+resolution (`resolveCanonicalEntityId`) is similarly bounded
+(`MAX_MERGE_CHAIN_DEPTH`) and cycle-safe (a visited-set check), so a
+pathological or cyclic entity-merge chain can never hang the process.
+
+There is still no public API or UI for any of this: no `/api/graph`, no
+`/api/provenance`, no admin page, no story-facing component — a dedicated
+boundary test (`test/provenanceBoundary.test.ts`) scans for exactly this,
+the same pattern Phase 7B's own exposure boundary uses.
+
+`getClusterOriginSummary` only ever loads the current extractor version's
+auto-generated observations (plus any `ADMIN_OVERRIDE` row regardless of
+version), never mixing in stale rows from before an extractor version
+bump that an article hasn't been reprocessed since — closing a data-
+integrity gap an adversarial review found (a stale, possibly-since-
+corrected observation could otherwise be silently blended into a fresh
+group alongside other articles). Near-duplicate excerpt comparison also
+excludes any excerpt normalizing to fewer than `MIN_WORDS_FOR_COMPARISON`
+(8) words, closing a false-positive risk the same review found: two
+merely coincidentally-identical short/boilerplate excerpts (e.g. both a
+malformed "Breaking News" placeholder) would otherwise score a perfect
+1.0 similarity from almost no real evidence.
 
 ## Dependency scanning
 
