@@ -1,0 +1,41 @@
+[
+  {
+    "canonicalName": "Reuters",
+    "entityType": "WIRE_SERVICE",
+    "primaryDomain": "reuters.com",
+    "aliases": [
+      { "text": "Reuters", "matchType": "CASE_INSENSITIVE" },
+      { "text": "Reuters News", "matchType": "CASE_INSENSITIVE" },
+      { "text": "Thomson Reuters", "matchType": "CASE_INSENSITIVE" }
+    ]
+  },
+  {
+    "canonicalName": "Associated Press",
+    "entityType": "WIRE_SERVICE",
+    "primaryDomain": "apnews.com",
+    "aliases": [
+      { "text": "Associated Press", "matchType": "CASE_INSENSITIVE" },
+      { "text": "The Associated Press", "matchType": "CASE_INSENSITIVE" },
+      { "text": "AP", "matchType": "EXACT" }
+    ]
+  },
+  {
+    "canonicalName": "U.S. Department of Justice",
+    "entityType": "GOVERNMENT_AGENCY",
+    "primaryDomain": "justice.gov",
+    "aliases": [
+      { "text": "Department of Justice", "matchType": "CASE_INSENSITIVE" },
+      { "text": "U.S. Department of Justice", "matchType": "CASE_INSENSITIVE" },
+      { "text": "DOJ", "matchType": "EXACT" }
+    ]
+  },
+  {
+    "canonicalName": "Federal Bureau of Investigation",
+    "entityType": "GOVERNMENT_AGENCY",
+    "primaryDomain": "fbi.gov",
+    "aliases": [
+      { "text": "Federal Bureau of Investigation", "matchType": "CASE_INSENSITIVE" },
+      { "text": "FBI", "matchType": "EXACT" }
+    ]
+  }
+]

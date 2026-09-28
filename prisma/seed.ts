@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import categories from "../config/categories.json";
 import sources from "../config/sources.json";
 import { seedPlans } from "./seedPlans";
+import { seedProvenanceEntities } from "./seedProvenanceEntities";
 
 const prisma = new PrismaClient();
 
@@ -41,6 +42,7 @@ async function main() {
   console.log(`Synced ${sources.length} sources.`);
 
   await seedPlans(prisma);
+  await seedProvenanceEntities(prisma);
 }
 
 main()

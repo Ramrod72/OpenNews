@@ -65,6 +65,9 @@ model Source {
   articles            Article[]
   fetchLogs           FeedFetchLog[]
   externalAssessments ExternalAssessment[]
+  /// Optional back-relation for ProvenanceEntity.relatedSourceId (Phase 7B)
+  /// — a Source never requires a linked entity, this is read-only convenience.
+  provenanceEntities  ProvenanceEntity[]
 
   @@index([active])
 }
@@ -148,7 +151,10 @@ model Article {
   clusterId String?
   cluster   StoryCluster? @relation(fields: [clusterId], references: [id])
 
-  keywords ArticleKeyword[]
+  keywords               ArticleKeyword[]
+  /// Structured attribution evidence extracted from this article's text
+  /// (Phase 7B) — see ProvenanceObservation.
+  provenanceObservations ProvenanceObservation[]
 
   createdAt DateTime @default(now())
 
@@ -423,6 +429,180 @@ model UserTopic {
   createdAt  DateTime  @default(now())
 
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Provenance extraction foundation (Veriqen Phase 7B)
+//
+// Structured, per-article evidence of WHERE an article's text says its
+// information came from (a wire service, a government statement, a court
+// filing, ...) — deliberately NOT a source graph, an independence count, or
+// a reliability score. Phase 8 consumes these rows to reason across
+// articles/clusters; Phase 7B only produces them. See ARCHITECTURE.md.
+//
+// ProvenanceEntity is intentionally separate from Source: Source is a
+// configured feed Veriqen actively polls, while a ProvenanceEntity is
+// something *mentioned inside article text* (Reuters, the FBI, a court)
+// that usually has no feed of its own. relatedSourceId is an optional,
+// one-directional convenience cross-reference only — never required, and
+// Source never gains a reciprocal required link back.
+//
+// Every value-set field below (entityType, relationshipType, evidenceType,
+// confidence, extractionSource, matchType, source, reviewState) is a plain
+// validated String, not a Prisma enum — the same Postgres/SQLite-portability
+// convention already used throughout this schema (see Subscription.status).
+// Valid values live in src/lib/validation/provenance.ts.
+// ---------------------------------------------------------------------------
+
+/// An entity a piece of reporting cites or attributes information to —
+/// e.g. Reuters, the Associated Press, the DOJ, the FBI, a named
+/// individual, or an anonymous-source concept. Not a configured feed (see
+/// Source) and not created merely because a name is mentioned somewhere —
+/// only when the deterministic extractor resolves a raw attribution match
+/// against a known alias (src/lib/provenance/entityResolution.ts).
+model ProvenanceEntity {
+  id            String  @id @default(cuid())
+  /// Unique so seeding (config/provenanceAliases.json) is a plain
+  /// idempotent upsert-by-name — also prevents accidentally creating two
+  /// separate "Reuters" rows in the first place, rather than relying only
+  /// on mergedIntoId to clean up after the fact.
+  canonicalName String  @unique
+  /// One of PROVENANCE_ENTITY_TYPE_VALUES.
+  entityType    String
+  /// e.g. "reuters.com" — optional, never required, never used for lookups yet.
+  primaryDomain String?
+
+  /// Optional convenience cross-reference to an existing Source when this
+  /// entity also happens to be a configured feed (e.g. "the Guardian").
+  /// Nullable and one-directional: Source never links back.
+  relatedSourceId String?
+  relatedSource   Source? @relation(fields: [relatedSourceId], references: [id], onDelete: SetNull)
+
+  /// Future-safe merge foundation only (e.g. resolving a duplicate "DOJ"
+  /// entity into the canonical one) — no merge UI/logic in Phase 7B.
+  /// Self-referential and nullable; never destructively deleted.
+  mergedIntoId String?
+  mergedInto   ProvenanceEntity?  @relation("ProvenanceEntityMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   ProvenanceEntity[] @relation("ProvenanceEntityMerge")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  aliases      ProvenanceAlias[]
+  observations ProvenanceObservation[]
+
+  @@index([relatedSourceId])
+  @@index([mergedIntoId])
+  @@index([entityType])
+}
+
+/// A known surface form of a ProvenanceEntity's name ("Reuters News",
+/// "Thomson Reuters", "AP", "DOJ", ...), used to resolve a raw matched
+/// string from article text to a canonical entity. Deterministic only —
+/// no fuzzy matching in Phase 7B.
+model ProvenanceAlias {
+  id       String           @id @default(cuid())
+  entityId String
+  entity   ProvenanceEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  /// The alias exactly as it should be recognized/displayed.
+  aliasText       String
+  /// Lowercased/trimmed form of aliasText — SQLite doesn't support
+  /// Prisma's `mode: "insensitive"` (see ARCHITECTURE.md's Search section
+  /// for the same limitation elsewhere in this app), so CASE_INSENSITIVE
+  /// resolution compares against this column in application code rather
+  /// than relying on a DB-level case-insensitive query.
+  normalizedAlias String
+
+  /// One of PROVENANCE_ALIAS_MATCH_TYPE_VALUES. EXACT for short, ambiguous
+  /// tokens (e.g. "AP" — must appear exactly as two capital letters, never
+  /// matched against "ap" lowercased inside another word); CASE_INSENSITIVE
+  /// for unambiguous full names ("Reuters", "Associated Press").
+  matchType String
+  /// One of PROVENANCE_ALIAS_SOURCE_VALUES. SEED rows ship with the app;
+  /// ADMIN_OVERRIDE rows must never be touched by reprocessing.
+  source    String
+
+  createdAt DateTime @default(now())
+
+  @@unique([normalizedAlias])
+  @@index([entityId])
+}
+
+/// One structured piece of evidence: "this article's text appears to
+/// attribute information to this entity, in this way, with this evidence
+/// snippet." Never an aggregate, never a confirmation count, never a
+/// reliability score — see ARCHITECTURE.md's Phase 7 section for the exact
+/// boundary with Phase 8.
+model ProvenanceObservation {
+  id        String  @id @default(cuid())
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  /// Nullable — resolution against a known alias frequently won't succeed;
+  /// rawEntityText is always populated regardless so nothing is ever lost.
+  entityId      String?
+  entity        ProvenanceEntity? @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  rawEntityText String
+
+  /// One of PROVENANCE_RELATIONSHIP_TYPE_VALUES.
+  relationshipType String
+  /// One of PROVENANCE_EVIDENCE_TYPE_VALUES. Describes reporting distance /
+  /// evidence form ONLY — never a claim that the underlying facts are true
+  /// (a government statement is primary evidence of what the government
+  /// SAID, not proof of what it said being correct). See
+  /// src/lib/provenance/patterns.ts for the full policy note.
+  evidenceType     String
+  /// One of PERSISTABLE_CONFIDENCE_VALUES (HIGH | MEDIUM) ONLY. The
+  /// extractor's own output type also allows LOW, but Phase 7B's locked
+  /// precision policy — false negative over false positive — means
+  /// persistObservations() filters LOW out before any row reaches this
+  /// table. A LOW value here would itself be a bug; regression-tested in
+  /// test/provenanceExtraction.test.ts.
+  confidence       String
+
+  /// The smallest span of text that shows the actual attribution
+  /// construction (e.g. "According to a DOJ press release,") — never the
+  /// entire excerpt/feed text, and bounded to a sensible maximum length
+  /// (see src/lib/provenance/persistObservations.ts).
+  evidenceText String
+
+  /// One of PROVENANCE_EXTRACTION_SOURCE_VALUES — which text buffer
+  /// startOffset/endOffset index into. FEED_TEXT is only ever produced for
+  /// newly-ingested articles, at ingestion time, against fuller sanitized
+  /// feed text that is NEVER itself persisted anywhere (see
+  /// src/lib/ingest/ingestSource.ts) — evidenceText is the only surviving
+  /// trace of it. Historical backfill can only ever produce TITLE or
+  /// STORED_EXCERPT_BACKFILL, since the fuller text no longer exists for
+  /// old articles.
+  extractionSource String
+  startOffset      Int
+  endOffset        Int
+
+  /// e.g. "attribution-regex@1" — bumped whenever extraction logic changes
+  /// meaningfully. Reprocessing replaces stale extractor-generated rows for
+  /// an article but must never touch an ADMIN_OVERRIDE row (reviewState).
+  extractorVersion String
+
+  /// One of PROVENANCE_REVIEW_STATE_VALUES. Foundation for future manual
+  /// correction only — no admin UI reads or writes this in Phase 7B beyond
+  /// this column existing so a later phase doesn't need a migration to add it.
+  reviewState String @default("UNREVIEWED")
+
+  /// SHA-256 of the fields that make an observation "the same one" —
+  /// (articleId, extractorVersion, extractionSource, startOffset,
+  /// endOffset, relationshipType, rawEntityText) — computed in
+  /// persistObservations.ts. Makes repeated worker/backfill runs safely
+  /// idempotent via the same unique-constraint-race pattern
+  /// Article.urlHash already establishes (see src/lib/ingest/ingestSource.ts).
+  dedupeKey String @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([articleId])
+  @@index([entityId])
+  @@index([extractorVersion])
+  @@index([reviewState])
 }
 
 /// One row per user; notification channel toggles. Extend with new columns

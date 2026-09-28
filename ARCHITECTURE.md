@@ -406,6 +406,158 @@ HTML from user/admin input" rule ingestion already follows for feed
 content — even though nothing in this app renders these fields via
 `dangerouslySetInnerHTML` in the first place.
 
+## Provenance extraction foundation (Phase 7B)
+
+Veriqen's eventual differentiator is answering "where did this information
+actually come from" — distinguishing an article count from a publisher
+count from an independent-origin count. Phase 7B builds only the
+structured-evidence foundation that later work would need; it does not
+attempt any of the cross-article reasoning itself. See the sections below
+for the exact boundary.
+
+**Models** (`ProvenanceEntity`, `ProvenanceAlias`, `ProvenanceObservation`,
+all additive — no existing column changed): a `ProvenanceEntity` is
+something an article's text cites (Reuters, the FBI, a court, an
+individual, an anonymous-source concept) — deliberately **separate** from
+`Source`, which represents a configured feed Veriqen actively polls. Most
+entities an article cites (a wire service, a government agency) are never
+configured feeds themselves, and a configured feed is never required to
+have a matching entity. `ProvenanceEntity.relatedSourceId` is an optional,
+one-directional convenience cross-reference only, for the case where a
+cited outlet also happens to be a configured `Source`.
+
+`ProvenanceAlias` maps known surface forms of a name ("Reuters", "Reuters
+News", "AP") to one canonical entity, deterministically (`EXACT` or
+`CASE_INSENSITIVE` matching, no fuzzy matching). Short, ambiguous
+abbreviations ("AP", "DOJ", "FBI") are seeded as `matchType: "EXACT"`
+specifically so a lowercase or mixed-case incidental mention ("AP
+Chemistry") can never resolve — a bare match still requires the exact
+case, and even then the extractor only accepts it when a recognized
+attribution verb sits immediately alongside it (see below). SQLite doesn't
+support Prisma's `mode: "insensitive"` (the same constraint the Search
+section above already documents), so `CASE_INSENSITIVE` resolution
+compares against a stored `normalizedAlias` column in application code
+rather than a DB-level case-insensitive query.
+
+`ProvenanceObservation` is one structured piece of evidence: "this
+article's text appears to attribute information to this entity, this way,
+with this snippet" — never an aggregate, never a count, never a score.
+`relationshipType` (`CITES_WIRE_SERVICE`, `CITES_STATEMENT`, ...) and
+`evidenceType` (`STATEMENT`, `COURT_FILING`, `REPORTING_CITATION`, ...) are
+deliberately separate fields, not one merged taxonomy — an entity type, an
+evidence form, and a reporting relationship are three different concepts
+that shouldn't be forced into a single enum. **`evidenceType` describes
+reporting distance only, never truth**: a government statement is primary
+evidence of what the government _said_, not proof the claim is correct; a
+court filing is primary documentary material for what the filing
+_alleges_, not proof the allegation is true. Nothing in this phase (or
+anywhere it's rendered, since nothing renders it yet — see below) may
+imply otherwise.
+
+**Precision policy — locked for this phase**: false negative over false
+positive. The extractor itself classifies a match as `HIGH`, `MEDIUM`, or
+`LOW`, but `persistObservationsForArticle` (`src/lib/provenance/
+persistObservations.ts`) discards `LOW` before any database write —
+`ProvenanceObservation.confidence` is never anything but `HIGH` or
+`MEDIUM` in this table. A resolved short `EXACT`-matched alias ("AP",
+"DOJ", "FBI") is capped at `MEDIUM` even in an otherwise-`HIGH`
+construction, since the token itself remains inherently more ambiguous
+than a full name; full names resolved case-insensitively keep `HIGH`.
+
+**Extraction insertion point**: per-article, immediately after ingestion —
+not during clustering, which has no additional text to analyze that
+ingestion doesn't already have. `ORIGINAL_REPORTING_CLAIM` is the one
+relationship type requiring extra context: it's only ever asserted when a
+named publisher in the text (e.g. "in an interview with The Guardian")
+matches the article's _own_ configured `Source.name` — never inferred
+from the mere presence of interview/eyewitness language naming some other
+outlet, and never from the absence of a wire-service citation (silence is
+not evidence of original reporting).
+
+**The critical text-availability design decision**: `Article.excerpt` has
+always been capped at 220 characters (see above), but the feed item's own
+`contentSnippet`/`summary`/`content`/`content:encoded` field is sanitized
+to a fuller ~8000-character plain-text boundary before that final
+truncation happens (`src/lib/security/sanitize.ts`'s `toPlainText`, then
+`truncatePlainText`). Phase 7B's ingestion integration
+(`src/lib/ingest/ingestSource.ts`) runs the deterministic extractor
+against that fuller **sanitized-but-not-yet-truncated** text — so
+attribution language appearing after character 220 (very common; a feed's
+lead sentence often isn't the sourcing clause) is still detected for
+newly-ingested articles. That fuller text is **never itself persisted
+anywhere** — no new column, no cache, nothing — only the resulting
+structured observations and their small, bounded evidence snippets
+survive. `ProvenanceObservation.extractionSource` records which text
+buffer an observation's offsets refer to (`TITLE`, `FEED_TEXT`, or
+`STORED_EXCERPT_BACKFILL`), so this distinction is never blurred.
+
+**Historical articles are honestly limited**: the fuller feed text was
+never retained for articles ingested before this phase, and can't be
+recovered without re-fetching (which this phase deliberately never does —
+see Security below). The explicitly-invoked backfill
+(`npm run backfill:provenance`, `worker/backfill-provenance.ts` — never
+run automatically by the migration) only ever produces `TITLE` or
+`STORED_EXCERPT_BACKFILL` observations from what's actually stored,
+resumable via `--after=<articleId>`, bounded-concurrency
+(`mapWithConcurrency`, the same primitive `ingestAll.ts` already uses),
+and safe to rerun (dedupe via a `dedupeKey` hash of an observation's
+identifying fields, the same unique-constraint-based idempotency pattern
+`Article.urlHash` already establishes).
+
+**Extractor**: `src/lib/provenance/patterns.ts` + `extract.ts` — pure,
+dependency-light, regex-based, no AI/LLM, no new npm package, following
+the same shape as `src/lib/nlp/keywords.ts` and `src/lib/perspective.ts`
+(conservative, only labeling what the text explicitly signals). A named
+wire-service/government-agency match requires resolving against the known
+alias table or the candidate is discarded entirely; role-based
+constructions ("police said", "according to the study") don't need
+resolution, since the fixed phrase itself is the precision guard.
+Negation ("Reuters did not report...") and speculation ("Reuters may
+report...", "...is expected to report...") immediately preceding the verb
+both suppress a match — including inside a quotation, since the guard
+checks the words themselves rather than needing separate quote-span
+detection. Nested attribution ("AP reported that police said...") is
+captured as two independent flat observations, never a fabricated chain.
+
+**Extractor versioning**: a plain `extractorVersion` string
+(`"attribution-regex@1"`), bumped whenever the logic changes meaningfully
+— no `ExtractionRun` model in this phase. Reprocessing
+(`clearStaleObservations`) removes an article's stale-version
+extractor-generated rows before re-extracting, but **never** touches a row
+whose `reviewState` is `ADMIN_OVERRIDE`, regardless of its version — a
+manually-corrected observation survives every future reprocessing run.
+`reviewState` (`UNREVIEWED`/`ADMIN_OVERRIDE`/`DISMISSED`) and
+`ProvenanceEntity.mergedIntoId`/`ProvenanceAlias.source` are the only
+manual-correction foundation this phase adds — no admin UI, no correction
+API; they exist purely so a future one doesn't require a non-additive
+migration.
+
+**Security**: zero new outbound network fetches. The extractor operates
+entirely on text already available through the existing ingestion
+process — it never fetches a publisher's article page, never follows a
+link inside an article, and never refetches a historical feed to
+reconstruct missing content. `src/lib/security/url.ts`'s `assertPublicHttpUrl`
+(the SSRF guard) is untouched. Following article links was considered and
+rejected for this phase: those URLs are, by this project's own threat
+model, untrusted third-party input (unlike admin-configured feed URLs),
+and fetching thousands of them would be a materially larger, higher-
+frequency attack surface than the existing one-feed-URL-per-source-per-
+interval pattern the SSRF guard was built and tested against.
+
+**Performance**: per-article extraction is pure regex/string matching over
+at most ~8000 characters — comparable in cost to the existing
+`extractKeywordPhrases` call that already runs per-article at ingestion.
+The alias table is loaded once per source fetch (`persistItems`) and once
+per backfill run, never once per regex match, keeping alias resolution a
+handful of in-memory Map lookups rather than a database query per
+candidate.
+
+**Explicitly not in this phase** (see "Phase 8" wherever it's mentioned
+above): no independent-source or corroboration count, no source graph, no
+reliability/truth score, no admin UI, no public API exposing observations,
+no AI-based extraction. Phase 7B produces raw structured evidence only;
+reasoning across articles/clusters is Phase 8's job.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate

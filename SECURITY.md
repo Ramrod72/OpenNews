@@ -36,6 +36,10 @@ What's in scope:
   content (HTML/script) stored in admin-entered profile or assessment
   fields; Veriqen presenting a third party's rating as its own
   determination, or as a source's without disclosing who made it.
+- Provenance extraction (Phase 7B) expanding the SSRF/network attack
+  surface; a corrupted/hand-edited alias or observation row degrading into
+  an unbounded content-retention path; a low-confidence guess being
+  persisted or presented as established provenance.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -271,6 +275,54 @@ providers and let Veriqen's presentation imply a false precision or a
 determination Veriqen never made. Every assessment requires a non-empty
 `provider` at the schema level (`externalAssessmentSchema`), so there is
 no way, even for an admin, to store an anonymous/unattributed rating.
+
+**Provenance extraction foundation (Phase 7B).** The deterministic
+attribution extractor (`src/lib/provenance/`) introduces **zero new
+outbound network fetches**: it operates entirely on text the existing
+ingestion pipeline already fetched and sanitized. It never fetches a
+publisher's article page, never follows a link found inside an article,
+and never refetches a historical feed to reconstruct text the database no
+longer has — the explicitly-invoked backfill script
+(`worker/backfill-provenance.ts`) works only from stored `title`/`excerpt`
+values. `src/lib/security/url.ts`'s `assertPublicHttpUrl` (the SSRF guard)
+is not modified, extended, or weakened anywhere in this phase; a
+structural regression test (`test/provenanceBoundary.test.ts`) asserts no
+provenance module calls `fetch()` or imports the SSRF guard at all, and
+that `fetchFeed.ts`'s own guarded fetch call count is unchanged.
+
+Every string the extractor reads (`Article.title`, the transient sanitized
+feed text, `Article.excerpt`) has already passed through
+`toPlainText()` — the same untrusted-feed-content sanitization every
+other ingested field goes through — before extraction ever sees it; the
+extractor introduces no new parsing of raw/HTML feed content. A resolved
+observation's `evidenceText` is a bounded-length snippet of the matched
+clause only (never the surrounding excerpt/feed text in full, never
+copied into more than one place beyond that snippet), and the fuller
+sanitized feed text a new article's extraction analyzes is discarded
+immediately after use — it is never written to any column, cache, or log
+in a form a later read could recover as a full-text copy of the original
+feed item, so this phase does not expand what publisher content Veriqen
+retains beyond the ~220-character excerpt it already stored before this
+phase existed.
+
+**Confidence is enforced, not just recommended.** Phase 7B's precision
+policy — false negative over false positive — is a locked product
+decision, not merely documentation: `persistObservationsForArticle`
+(`src/lib/provenance/persistObservations.ts`) filters out any `LOW`-
+confidence candidate before it reaches a database write, so
+`ProvenanceObservation.confidence` can only ever be `HIGH` or `MEDIUM` in
+storage regardless of what the extractor internally considers. This is
+directly regression-tested (`test/provenanceIngestion.integration.test.ts`),
+including a case built specifically to produce an internal `LOW`
+classification and confirm it never reaches the table.
+
+**No provenance data is exposed anywhere yet.** No API route, admin page,
+or public-facing UI component reads or renders `ProvenanceObservation`,
+`ProvenanceEntity`, or `ProvenanceAlias` in this phase — a structural test
+scans `src/app/api`, `src/app/admin`, and every UI component for exactly
+this. There is consequently no new admin-authorization or public-exposure
+surface for this data to audit yet; that arrives with whichever future
+phase adds the first read path.
 
 ## Dependency scanning
 
