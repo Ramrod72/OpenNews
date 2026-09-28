@@ -773,6 +773,137 @@ space-delimited language degrades gracefully, while a script with no
 inter-word spaces (e.g. CJK text) collapses toward exact-match-only
 comparison — again a false-negative direction, never overclaiming.
 
+## Story Intelligence — "Trace this story" (Phase 9B)
+
+Phase 9B is the first time Phase 7/8's provenance intelligence is shown
+directly to ordinary users, on the existing canonical `/story/[slug]`
+page — no dedicated route, no new public API. It follows this repo's
+established data-loading pattern exactly: the Server Component calls a
+`src/lib` function directly, the same way `getStoryClusterBySlug` already
+does.
+
+**Server-side integration.** `StoryPage` calls
+`resolveStoryIntelligenceViewerId()` (resolves the current session,
+failing safely to anonymous on any error — see below) and
+`getRelatedClusters` in parallel, then calls
+`loadStoryIntelligence(cluster, viewerId)`
+(`src/lib/storyIntelligence.ts`), which loads `getClusterOriginSummary`
+and the viewer's `provenance_full` entitlement, and maps both through the
+safe view-model layer. The result is passed straight to
+`<StoryIntelligence>` (`src/components/story/StoryIntelligence.tsx`), a
+Server Component. The only Client Component is
+`<EvidenceDrawer>` (`src/components/story/EvidenceDrawer.tsx`), which
+handles the expand/collapse interaction and receives nothing but the
+already-safe view model.
+
+**The safe view-model boundary.** `src/lib/storyIntelligenceView.ts`'s
+`buildStoryIntelligenceView` is the ONE place `ClusterOriginSummary` (which
+carries `observationId`/`entityId`/`extractorVersion`/`reviewState`/
+`dedupeKey`/`startOffset`/`endOffset`/raw confidence enums — see Phase
+8B's own section above) is converted into `StoryIntelligenceView`, the
+only shape ever passed to a Client Component or otherwise serialized to
+the browser. It's a pure function (no Prisma, no auth, no I/O), which
+makes every guarantee below directly unit-testable without a database —
+see `src/lib/storyIntelligenceView.test.ts`'s dedicated tests proving no
+forbidden key ever appears in the output, regardless of entitlement.
+
+**Entitlement gating happens in the data, not in CSS.** `hasFullAccess`
+(from the existing `provenance_full` entitlement — already present on the
+Basic/Pro plans, no new entitlement key was added) controls what the
+mapper _includes_ in the object: a non-entitled viewer's reporting-source
+groups simply never have `articles`/`evidence` populated, and the group
+list itself is truncated to `MAX_FREE_REPORTING_GROUPS` (2) — there is no
+premium data anywhere in the object for a client-side layer to hide.
+`totalReportingSourceGroupCount` still reports the true total so the Free
+preview can honestly say "+N more detected."
+
+**Live counts, not denormalized ones.** `articleCount`/`publisherCount`
+are read directly from `ClusterOriginSummary` (computed live, at query
+time, from the actual article set `getClusterOriginSummary` analyzed) —
+never from `StoryCluster.articleCount`/`sourceCount`, which are a
+separately-denormalized field the clustering engine writes and could, in
+principle, drift from what Phase 8 actually sees for this cluster. A
+reporting-source group's own `articleCount` is Phase 8's own already-
+deduplicated distinct-article count — an article with five separate
+Reuters observations counts as one citing article, never five.
+
+**Bounded display, even for a pathological cluster.** Phase 8 is tested
+against 1,000-article clusters; without a defensive limit, a single
+expanded reporting-source group could try to render 1,000 article rows
+and up to 5,000 evidence snippets. `MAX_ARTICLES_PER_GROUP_DISPLAY` (50)
+bounds `articles`/`evidence` per group (and per the original-reporting
+list) independently of the group's own true `articleCount`, which is
+never truncated. Within whatever's displayed, `MAX_EVIDENCE_PER_ARTICLE`
+(5) further bounds evidence snippets per article, HIGH-prioritized over
+MEDIUM internally — the raw confidence value itself is never exposed. A
+third, TOTAL cap (`MAX_EVIDENCE_ITEMS_PER_GROUP`, 100) bounds the
+flattened evidence list for one group even when every displayed article
+contributes its own per-article maximum (50 articles x 5 snippets could
+otherwise reach ~50,000 characters of publisher-sourced text for one
+expanded group). Whenever a group or the original-reporting list is
+actually truncated, `EvidenceDrawer` says so explicitly ("Showing 50 of
+127 articles") rather than letting the true `articleCount`/`count` next to
+a shorter list imply the display is complete or that articles are
+missing/broken.
+
+**Article links are scheme-sanitized before they ever reach a Client
+Component.** `Article.url` is untrusted (ultimately from a publisher's RSS
+feed), and `normalizeUrl()` (`src/lib/ingest/normalize.ts`) only
+canonicalizes a URL — it does not restrict its scheme, so a malicious or
+compromised feed could in principle supply a `javascript:`/`data:` link.
+`storyIntelligenceView.ts` runs every article URL through `safeHttpUrl`
+(`src/lib/security/sanitize.ts` — the same http(s)-only convention
+`safeImageUrl` already establishes for feed-supplied image URLs) before
+it's ever included in the view model; an unsafe scheme becomes `""`, and
+`EvidenceDrawer` renders that case as plain, non-clickable text instead of
+an `<a href>`.
+
+**Failure isolation.** Story Intelligence must never take down the rest
+of the story page, and an entitlement-service hiccup must never be treated
+the same as "nothing to show." `loadStoryIntelligence` handles its two
+failure sources differently on purpose: the entitlement lookup (`can()`)
+has its own try/catch and fails CLOSED to `hasFullAccess = false` (the
+Free/logged-out experience) rather than granting full access or hiding
+already-available sourcing data; `getClusterOriginSummary` throwing means
+there's nothing safe to show at all, so only that failure resolves the
+whole section to `{ status: "unavailable" }`, rendered as "Story sourcing
+details are temporarily unavailable," with no stack trace or internal
+detail either way. Resolving the current viewer is handled _separately_,
+by `resolveStoryIntelligenceViewerId`, which fails safely to anonymous
+(the same fail-to-anonymous precedent `resolveViewerAdEligibility`
+already establishes in `src/lib/ads.ts`) — before this feature, the story
+page had no dependency on the auth/session tables at all, so a transient
+failure there must degrade gracefully rather than take down a page that
+previously never touched that table.
+
+**Consumer terminology, and what's never shown.** "Provenance,"
+`relationshipType`/`evidenceType` enum values, `POSSIBLE`/
+`STRONGLY_INFERRED`, and raw `HIGH`/`MEDIUM` confidence are never
+rendered — see `storyIntelligenceView.ts`'s translation into "Reporting
+sources," "cited by"/"referenced by" (see below), "Original reporting,"
+and "Sourcing not detected." Nothing here implies independent
+confirmation, verification, or that shared attribution means the same
+dispatch — see the "How Veriqen traces this" disclosure on the page
+itself for the full, plain-language explanation and limitations.
+
+**Wire service vs. directly-cited source.** A `WIRE_SERVICE`/`NEWS_OUTLET`
+group is worded "cited by N articles" (a reporting-intermediary
+relationship). Any other entity type (`GOVERNMENT_AGENCY`, `COURT`, etc.)
+is worded "referenced by N articles" instead — a directly-cited primary
+source, not a reporting act, and if anything an even more routine signal
+(many outlets independently attending the same press conference is
+unremarkable). Both are grouped identically underneath (same resolved
+entity, `POSSIBLE` confidence); only the display verb differs, per Phase
+8B's own entityType distinction.
+
+**Deferred, explicitly out of scope for Phase 9B**: Story Map
+visualization, primary-evidence UI (`primaryEvidenceGroups` stays
+populated by the backend but unused by this UI — Phase 7's extractor
+can't yet distinguish specific documents), claim extraction/comparison/
+corroboration, AI summaries or synthesis, shareable intelligence cards,
+Story Evolution, a URL analyzer, embeds, referrals, and any new
+entitlement key, schema change, migration, or public API.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate

@@ -127,15 +127,24 @@ describe("Phase 8B exposes no public API and no UI for source-group/origin data"
   });
 
   it("no UI component (story/source-facing or admin) references the graph module", () => {
+    // Comments are stripped before matching: Phase 9B's StoryIntelligence/
+    // EvidenceDrawer components legitimately document (in prose) that they
+    // never import these graph-module symbols — a real safety property —
+    // and a raw whole-file scan would false-positive on that explanation.
+    // The check that matters is unchanged: no UI file's actual CODE may
+    // import/reference these symbols directly.
     const uiFiles = [
       ...walk(join(ROOT, "src/components")).filter((f) => f.endsWith(".tsx")),
       ...walk(join(ROOT, "src/app")).filter((f) => f.endsWith(".tsx")),
     ];
-    const offenders = uiFiles.filter((file) =>
-      /getClusterOriginSummary|buildSourceGroups|SharedReportingSourceGroup|ClusterOriginSummary/.test(
-        readFileSync(file, "utf8"),
-      ),
-    );
+    const offenders = uiFiles.filter((file) => {
+      const codeOnly = readFileSync(file, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "");
+      return /getClusterOriginSummary|buildSourceGroups|SharedReportingSourceGroup|ClusterOriginSummary/.test(
+        codeOnly,
+      );
+    });
     expect(offenders).toEqual([]);
   });
 

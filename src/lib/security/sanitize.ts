@@ -65,8 +65,16 @@ export function excerpt(text: string, maxLength = 220): string {
   return truncatePlainText(toPlainText(text, 8000), maxLength);
 }
 
-/** Only allow http(s) image URLs through; anything else (data:, javascript:, ...) is dropped. */
-export function safeImageUrl(url: string | undefined | null): string | null {
+/**
+ * Only allow plain http(s) URLs through; anything else (javascript:, data:,
+ * vbscript:, file:, ...) is dropped. Feed-supplied URLs (article links,
+ * image URLs) are untrusted input — `new URL()` alone happily parses a
+ * `javascript:` URL without throwing, so a scheme check is required before
+ * any such string is ever used as an href or src (see safeImageUrl below,
+ * and storyIntelligenceView.ts, which applies this to Article.url before it
+ * reaches EvidenceDrawer.tsx's rendered links).
+ */
+export function safeHttpUrl(url: string | undefined | null): string | null {
   if (!url) return null;
   try {
     const parsed = new URL(url);
@@ -75,4 +83,9 @@ export function safeImageUrl(url: string | undefined | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Only allow http(s) image URLs through; anything else (data:, javascript:, ...) is dropped. */
+export function safeImageUrl(url: string | undefined | null): string | null {
+  return safeHttpUrl(url);
 }
