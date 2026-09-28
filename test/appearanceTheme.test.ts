@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import { APPEARANCE_VALUES } from "../src/lib/appearance";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -159,15 +161,28 @@ describe("selection is indicated by more than color alone, and controls are keyb
     expect(section).toMatch(/role="radio"/);
   });
 
-  it("neither control uses dangerouslySetInnerHTML", () => {
+  it("neither interactive control nor the sanitizer uses dangerouslySetInnerHTML", () => {
     for (const path of [
       "src/components/ui/AppearanceMenu.tsx",
       "src/app/account/AppearanceSection.tsx",
       "src/components/ui/ThemeSanitizer.tsx",
-      "src/components/theme-provider.tsx",
     ]) {
       expect(read(path)).not.toMatch(/dangerouslySetInnerHTML\s*[:=]/);
     }
+  });
+
+  it("theme-provider.tsx's one use of dangerouslySetInnerHTML is the deterministic GUARD_SCRIPT constant, not templated user/request data", () => {
+    const source = read("src/components/theme-provider.tsx");
+    const matches = [
+      ...source.matchAll(/dangerouslySetInnerHTML\s*[:=]\s*\{\{\s*__html:\s*([^}]+)\}\}/g),
+    ];
+    expect(matches).toHaveLength(1);
+    expect(matches[0][1].trim()).toBe("GUARD_SCRIPT");
+    // Its only interpolation is the shared, hardcoded APPEARANCE_VALUES list —
+    // never anything request-derived (props, params, headers, etc.).
+    const guardDecl = source.match(/const GUARD_SCRIPT = `([^`]*)`;/)?.[1] ?? "";
+    expect(guardDecl).toContain("${JSON.stringify(APPEARANCE_VALUES)}");
+    expect(guardDecl.replace("${JSON.stringify(APPEARANCE_VALUES)}", "")).not.toMatch(/\$\{/);
   });
 });
 
@@ -180,5 +195,80 @@ describe("no hydration-mismatch-prone pattern was introduced", () => {
       const source = read(path);
       expect(source).toMatch(/useSyncExternalStore/);
     }
+  });
+});
+
+describe("the localStorage guard script actually repairs a corrupted persisted value", () => {
+  /**
+   * next-themes applies whatever string is in localStorage["theme"] as a
+   * literal classList.add(...) with no validation of its own — a value
+   * containing a character invalid for a class token (e.g. a space) makes
+   * that call throw, and it throws inside next-themes' own effect *before*
+   * ThemeSanitizer (a React effect that only runs after mount) ever gets a
+   * chance to react, crashing the whole page to Next.js's client-side error
+   * screen (confirmed against a live browser). theme-provider.tsx's guard
+   * script exists specifically to repair the value in storage before
+   * next-themes' own bootstrap script ever reads it, so the bad value is
+   * never applied as a class in the first place.
+   *
+   * This test extracts the real GUARD_SCRIPT template literal out of the
+   * component's source (not a hand-duplicated copy of its logic), resolves
+   * its ${APPEARANCE_VALUES} interpolation using the actual shared
+   * constant, and then *executes* the resulting script against a mock
+   * localStorage — the same way a browser would run it as an inline
+   * <script> — so a regression in the guard's own logic (not just its
+   * presence) fails this test.
+   */
+  function extractGuardScript(): string {
+    const source = read("src/components/theme-provider.tsx");
+    const match = source.match(/const GUARD_SCRIPT = `([^`]*)`;/);
+    if (!match) throw new Error("GUARD_SCRIPT template literal not found in theme-provider.tsx");
+    const build = new Function("APPEARANCE_VALUES", `return \`${match[1]}\`;`);
+    return build(APPEARANCE_VALUES);
+  }
+
+  function runGuard(initial: string | undefined) {
+    const store = new Map<string, string>();
+    if (initial !== undefined) store.set("theme", initial);
+    const sandbox = {
+      localStorage: {
+        getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+        setItem: (key: string, value: string) => {
+          store.set(key, value);
+        },
+      },
+    };
+    runInNewContext(extractGuardScript(), sandbox);
+    return store.get("theme");
+  }
+
+  it('rewrites every invalid value (garbage, whitespace, wrong case, empty string) to "system"', () => {
+    for (const bad of ["xyz-garbage", "foo bar", " light", "System", "", "null", "undefined"]) {
+      expect(runGuard(bad)).toBe("system");
+    }
+  });
+
+  it("leaves every valid value untouched", () => {
+    for (const value of APPEARANCE_VALUES) {
+      expect(runGuard(value)).toBe(value);
+    }
+  });
+
+  it("does not write a value at all when the key was never set (preserves next-themes' own defaultTheme fallback)", () => {
+    expect(runGuard(undefined)).toBeUndefined();
+  });
+
+  it("never throws even if localStorage access itself throws (private-browsing/quota style failures)", () => {
+    const sandbox = {
+      localStorage: {
+        getItem: () => {
+          throw new Error("access denied");
+        },
+        setItem: () => {
+          throw new Error("access denied");
+        },
+      },
+    };
+    expect(() => runInNewContext(extractGuardScript(), sandbox)).not.toThrow();
   });
 });
