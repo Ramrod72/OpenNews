@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { Flame, Bookmark, Newspaper, Tag, UserCircle } from "lucide-react";
 import { listCategories } from "@/lib/stories";
 import { SearchBar } from "./SearchBar";
-import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { AppearanceMenu } from "@/components/ui/AppearanceMenu";
 import { MobileNav } from "./MobileNav";
 
 export async function Header() {
@@ -48,7 +48,7 @@ export async function Header() {
           >
             <UserCircle size={16} />
           </Link>
-          <ThemeToggle />
+          <AppearanceMenu />
           <MobileNav categories={categories} />
         </div>
       </div>
