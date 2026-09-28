@@ -46,13 +46,23 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** Truncate a plain-text excerpt to a card-friendly length without cutting mid-word. */
-export function excerpt(text: string, maxLength = 220): string {
-  const plain = toPlainText(text, 8000);
+/**
+ * Truncate already-sanitized plain text to a card-friendly length without
+ * cutting mid-word. Split out from excerpt() so a caller that needs the
+ * fuller sanitized text for its own purposes before truncation (Phase 7B's
+ * provenance extraction — see src/lib/ingest/ingestSource.ts) can sanitize
+ * once and reuse it, rather than sanitizing the same raw input twice.
+ */
+export function truncatePlainText(plain: string, maxLength = 220): string {
   if (plain.length <= maxLength) return plain;
   const cut = plain.slice(0, maxLength);
   const lastSpace = cut.lastIndexOf(" ");
   return `${cut.slice(0, lastSpace > 40 ? lastSpace : maxLength).trimEnd()}…`;
+}
+
+/** Sanitize raw (possibly-HTML) input to plain text, then truncate to a card-friendly length. */
+export function excerpt(text: string, maxLength = 220): string {
+  return truncatePlainText(toPlainText(text, 8000), maxLength);
 }
 
 /** Only allow http(s) image URLs through; anything else (data:, javascript:, ...) is dropped. */

@@ -1,9 +1,14 @@
 import type { Source } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { excerpt, safeImageUrl, toPlainText } from "@/lib/security/sanitize";
+import { safeImageUrl, toPlainText, truncatePlainText } from "@/lib/security/sanitize";
 import { extractImageUrl, fetchAndParseFeed, FeedFetchError, type FeedItem } from "./fetchFeed";
 import { hashUrl, normalizeTitle, normalizeUrl } from "./normalize";
 import { extractKeywordPhrases } from "@/lib/nlp/keywords";
+import {
+  loadAliasIndex,
+  persistObservationsForArticle,
+} from "@/lib/provenance/persistObservations";
+import type { AliasIndex } from "@/lib/provenance/entityResolution";
 
 const RETRY_DELAYS_MS = [1000, 3000];
 
@@ -89,6 +94,10 @@ async function persistItems(
   items: FeedItem[],
 ): Promise<{ itemsFound: number; itemsNew: number }> {
   const category = await prisma.category.findUnique({ where: { slug: source.categorySlug } });
+  // Loaded once per source fetch (not once per item) — the alias table is
+  // small and shared across every article in this feed; see
+  // ARCHITECTURE.md's Phase 7 performance notes.
+  const aliasIndex = await loadAliasIndex(prisma);
 
   let itemsNew = 0;
   let itemsFound = 0;
@@ -113,6 +122,13 @@ async function persistItems(
 
     const rawExcerpt =
       item.contentSnippet || item.summary || item.content || item["content:encoded"];
+    // Sanitized ONCE, to the existing 8000-char boundary — this is the
+    // fuller transient text Phase 7B's provenance extraction analyzes
+    // (see extractAndPersistProvenance below) before it's truncated to
+    // the stored 220-char Article.excerpt. It is NEVER itself persisted
+    // anywhere — only structured observations and small evidence
+    // snippets survive (see ARCHITECTURE.md's Phase 7 section).
+    const sanitizedFeedText = rawExcerpt ? toPlainText(rawExcerpt, 8000) : "";
     const publishedAt = parseDate(item.isoDate || item.pubDate) ?? new Date();
 
     try {
@@ -123,7 +139,7 @@ async function persistItems(
           urlHash,
           title,
           titleNormalized: normalizeTitle(title),
-          excerpt: rawExcerpt ? excerpt(rawExcerpt) : null,
+          excerpt: sanitizedFeedText ? truncatePlainText(sanitizedFeedText) : null,
           imageUrl: safeImageUrl(extractImageUrl(item)),
           author: item.creator ? toPlainText(item.creator, 200) : null,
           categoryId: category?.id,
@@ -133,6 +149,17 @@ async function persistItems(
       });
       await linkKeywords(created.id, title);
       itemsNew += 1;
+      // Runs AFTER the Article row exists and AFTER itemsNew is counted —
+      // extraction/persistence failure must never prevent article
+      // creation or be mistaken for one (see extractAndPersistProvenance's
+      // own isolated try/catch below).
+      await extractAndPersistProvenance(
+        created.id,
+        title,
+        sanitizedFeedText,
+        source.name,
+        aliasIndex,
+      );
     } catch (err) {
       // Unique constraint races (two sources sharing a syndicated URL fetched
       // concurrently) are expected and fine to skip; anything else, keep going.
@@ -143,6 +170,49 @@ async function persistItems(
   }
 
   return { itemsFound, itemsNew };
+}
+
+/**
+ * Runs the deterministic attribution extractor against this newly-created
+ * article's title and (if present) its fuller sanitized feed text, then
+ * persists any resulting HIGH/MEDIUM observations. Title and feed text are
+ * genuinely separate text buffers with separate offset spaces, so each is
+ * extracted and persisted as its own extractionSource ("TITLE" /
+ * "FEED_TEXT") — never merged into one virtual buffer.
+ *
+ * Wrapped in its own try/catch, isolated from the caller: an unexpected
+ * failure here (a bug, not just a DB write error — persistObservations.ts
+ * already isolates per-observation write failures on its own) must never
+ * propagate up and be mistaken for an article-creation failure, matching
+ * the same isolation linkKeywords() already applies to keyword-linking.
+ */
+async function extractAndPersistProvenance(
+  articleId: string,
+  title: string,
+  sanitizedFeedText: string,
+  publisherName: string,
+  aliasIndex: AliasIndex,
+): Promise<void> {
+  try {
+    await persistObservationsForArticle(prisma, {
+      articleId,
+      text: title,
+      extractionSource: "TITLE",
+      publisherName,
+      aliasIndex,
+    });
+    if (sanitizedFeedText) {
+      await persistObservationsForArticle(prisma, {
+        articleId,
+        text: sanitizedFeedText,
+        extractionSource: "FEED_TEXT",
+        publisherName,
+        aliasIndex,
+      });
+    }
+  } catch (err) {
+    console.error(`[ingest] provenance extraction failed for article ${articleId}:`, err);
+  }
 }
 
 async function linkKeywords(articleId: string, title: string): Promise<void> {
@@ -179,4 +249,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export { FeedFetchError };
+// Exported for direct integration testing with synthetic FeedItem[] input,
+// bypassing the real network fetch entirely (see test/provenanceIngestion.integration.test.ts).
+export { FeedFetchError, persistItems };
