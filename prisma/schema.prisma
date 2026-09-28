@@ -155,6 +155,9 @@ model Article {
   /// Structured attribution evidence extracted from this article's text
   /// (Phase 7B) — see ProvenanceObservation.
   provenanceObservations ProvenanceObservation[]
+  /// Deterministic numerical/attributed-statement claims extracted from
+  /// this article's text (Phase 10B) — see Claim.
+  claims                 Claim[]
 
   createdAt DateTime @default(now())
 
@@ -490,6 +493,8 @@ model ProvenanceEntity {
 
   aliases      ProvenanceAlias[]
   observations ProvenanceObservation[]
+  /// Phase 10B ATTRIBUTED_STATEMENT claims resolved to this entity.
+  claims       Claim[]
 
   @@index([relatedSourceId])
   @@index([mergedIntoId])
@@ -603,6 +608,98 @@ model ProvenanceObservation {
   @@index([entityId])
   @@index([extractorVersion])
   @@index([reviewState])
+}
+
+/// Phase 10B — a single, bounded, deterministically-extracted claim from
+/// one article's text: either a NUMERICAL_ASSERTION (a number tied to a
+/// closed-set recognized unit, e.g. "12 people were injured") or an
+/// ATTRIBUTED_STATEMENT (the sentence containing an existing, already-
+/// persisted Phase 7 ProvenanceObservation — see
+/// src/lib/claims/buildAttributedStatementClaims.ts's own doc comment on
+/// why ATTRIBUTED_STATEMENT is never independently re-derived). Like
+/// ProvenanceObservation, this is one atomic, per-article, traceable fact
+/// — never an aggregate, never a cross-article group, never a truth/
+/// confidence score about the claim's content. Cross-article grouping
+/// happens entirely at query time (src/lib/claims/buildClaimGroups.ts) —
+/// no ClaimGroup/ClaimOccurrence table exists, by design (see
+/// ARCHITECTURE.md's Phase 10B section for the full rationale, which
+/// mirrors Phase 8's own ProvenanceObservation-persisted /
+/// SharedReportingSourceGroup-unpersisted split exactly).
+model Claim {
+  id        String  @id @default(cuid())
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  /// One of CLAIM_KIND_VALUES (NUMERICAL_ASSERTION | ATTRIBUTED_STATEMENT).
+  kind String
+
+  /// The bounded sentence-level snippet the claim was derived from — never
+  /// the full input text (see src/lib/claims/persistClaims.ts for the
+  /// enforced length cap). This is the ONLY text ever shown to a consumer
+  /// for this claim.
+  rawText String
+  /// Deterministic, conservative normalization of rawText used ONLY for
+  /// query-time grouping-similarity comparison (src/lib/claims/normalize.ts)
+  /// — never itself displayed.
+  normalizedText String
+
+  /// Nullable — NUMERICAL_ASSERTION claims usually have none, and an
+  /// ATTRIBUTED_STATEMENT's underlying Phase 7 observation frequently
+  /// won't resolve either (see ProvenanceObservation.entityId's own
+  /// comment). Never fabricated when unresolved.
+  entityId String?
+  entity   ProvenanceEntity? @relation(fields: [entityId], references: [id], onDelete: SetNull)
+
+  /// Present only for kind = NUMERICAL_ASSERTION.
+  numericValue Float?
+  /// One of CLAIM_NUMERIC_UNIT_VALUES — closed set. Present only for kind = NUMERICAL_ASSERTION.
+  numericUnit  String?
+  /// One of CLAIM_NUMERIC_QUALIFIER_VALUES — EXACT/AT_LEAST/MORE_THAN/
+  /// AT_MOST/LESS_THAN/APPROXIMATE. Present only for kind = NUMERICAL_ASSERTION;
+  /// grouping must never treat two different qualifiers as equivalent.
+  numericQualifier String?
+
+  /// One of PROVENANCE_EXTRACTION_SOURCE_VALUES — reused verbatim from
+  /// Phase 7 so the two modules can never silently disagree on what
+  /// TITLE/FEED_TEXT/STORED_EXCERPT_BACKFILL mean. Historical backfill can
+  /// only ever produce TITLE or STORED_EXCERPT_BACKFILL claims — never
+  /// FEED_TEXT, honestly reflecting what text was actually available (see
+  /// worker/backfill-claims.ts).
+  extractionSource String
+  startOffset      Int
+  endOffset        Int
+
+  /// One of PERSISTABLE_CONFIDENCE_VALUES (HIGH | MEDIUM) ONLY — reused
+  /// verbatim from Phase 7's confidence concept. A LOW value here would
+  /// itself be a bug; persistClaims.ts never produces one, since
+  /// src/lib/claims/extractNumericalAssertions.ts and
+  /// buildAttributedStatementClaims.ts never emit LOW to begin with.
+  confidence String
+
+  /// e.g. "claim-regex@1" — bumped whenever extraction logic changes
+  /// meaningfully. Reprocessing replaces stale extractor-generated rows for
+  /// an article but must never touch an ADMIN_OVERRIDE row (reviewState).
+  claimExtractorVersion String
+
+  /// One of PROVENANCE_REVIEW_STATE_VALUES — reused verbatim. Foundation
+  /// for future manual correction only; no admin UI reads or writes this
+  /// in Phase 10B beyond this column existing.
+  reviewState String @default("UNREVIEWED")
+
+  /// SHA-256 of the fields that make a claim "the same one" — (articleId,
+  /// claimExtractorVersion, extractionSource, kind, startOffset, endOffset,
+  /// entityId, numericUnit, numericQualifier) — computed in
+  /// persistClaims.ts. Makes repeated worker/backfill runs safely
+  /// idempotent, the same unique-constraint-race pattern
+  /// ProvenanceObservation.dedupeKey already establishes.
+  dedupeKey String @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([articleId])
+  @@index([kind])
+  @@index([claimExtractorVersion])
+  @@index([entityId])
 }
 
 /// One row per user; notification channel toggles. Extend with new columns

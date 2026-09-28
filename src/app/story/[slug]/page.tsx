@@ -14,11 +14,13 @@ import {
   type Perspective,
 } from "@/lib/perspective";
 import { loadStoryIntelligence, resolveStoryIntelligenceViewerId } from "@/lib/storyIntelligence";
+import { loadCoverageComparison } from "@/lib/coverageComparison";
 import { BreakingBadge, CategoryBadge } from "@/components/ui/CategoryBadge";
 import { BookmarkButton } from "@/components/story/BookmarkButton";
 import { ShareButton } from "@/components/story/ShareButton";
 import { StoryCard } from "@/components/story/StoryCard";
 import { StoryIntelligence } from "@/components/story/StoryIntelligence";
+import { CoverageComparison } from "@/components/story/CoverageComparison";
 import { AdContainer } from "@/components/ads/AdContainer";
 
 export const revalidate = 60;
@@ -95,14 +97,20 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
   const storyUrl = getStoryUrl(cluster.slug);
   // All three depend only on `cluster` (or nothing), never on each other,
   // so they run together. resolveStoryIntelligenceViewerId fails safely
-  // to anonymous on error; loadStoryIntelligence isolates every other
-  // failure on its own (see src/lib/storyIntelligence.ts) — neither can
-  // take down the rest of the page.
+  // to anonymous on error; loadStoryIntelligence/loadCoverageComparison
+  // each isolate their own failures (see src/lib/storyIntelligence.ts and
+  // src/lib/coverageComparison.ts) — none of the three can take down the
+  // rest of the page. The same viewerId is reused for Coverage Comparison
+  // (Phase 10B) — resolving the current viewer is a generic concern, not
+  // specific to Story Intelligence, despite the function's name.
   const [related, viewerId] = await Promise.all([
     getRelatedClusters(cluster, 6),
     resolveStoryIntelligenceViewerId(),
   ]);
-  const storyIntelligence = await loadStoryIntelligence(cluster, viewerId);
+  const [storyIntelligence, coverageComparison] = await Promise.all([
+    loadStoryIntelligence(cluster, viewerId),
+    loadCoverageComparison(cluster, viewerId),
+  ]);
   const timeline = [...cluster.articles].sort(
     (a, b) => a.publishedAt.getTime() - b.publishedAt.getTime(),
   );
@@ -215,6 +223,8 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
         </div>
 
         <StoryIntelligence intelligence={storyIntelligence} />
+
+        <CoverageComparison comparison={coverageComparison} />
 
         {byPerspective.size > 1 && (
           <section className="mt-10">

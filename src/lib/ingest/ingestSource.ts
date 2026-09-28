@@ -5,10 +5,14 @@ import { extractImageUrl, fetchAndParseFeed, FeedFetchError, type FeedItem } fro
 import { hashUrl, normalizeTitle, normalizeUrl } from "./normalize";
 import { extractKeywordPhrases } from "@/lib/nlp/keywords";
 import {
+  EXTRACTOR_VERSION,
   loadAliasIndex,
   persistObservationsForArticle,
 } from "@/lib/provenance/persistObservations";
 import type { AliasIndex } from "@/lib/provenance/entityResolution";
+import { persistClaimsForArticle } from "@/lib/claims/persistClaims";
+import type { AttributedStatementSourceObservation } from "@/lib/claims/buildAttributedStatementClaims";
+import type { ProvenanceExtractionSource } from "@/lib/validation/provenance";
 
 const RETRY_DELAYS_MS = [1000, 3000];
 
@@ -160,6 +164,15 @@ async function persistItems(
         source.name,
         aliasIndex,
       );
+      // Runs AFTER provenance extraction has persisted this article's
+      // observations — ATTRIBUTED_STATEMENT claims are derived from those
+      // already-persisted rows, never re-detected independently (see
+      // extractAndPersistClaims's own doc comment). Isolated in its own
+      // try/catch, separate from extractAndPersistProvenance's, so a
+      // claims-specific failure can never be mistaken for — or interfere
+      // with — provenance extraction, matching the same isolation
+      // linkKeywords() and extractAndPersistProvenance() already apply.
+      await extractAndPersistClaims(created.id, title, sanitizedFeedText);
     } catch (err) {
       // Unique constraint races (two sources sharing a syndicated URL fetched
       // concurrently) are expected and fine to skip; anything else, keep going.
@@ -212,6 +225,75 @@ async function extractAndPersistProvenance(
     }
   } catch (err) {
     console.error(`[ingest] provenance extraction failed for article ${articleId}:`, err);
+  }
+}
+
+/**
+ * Loads the current-extractorVersion (plus any ADMIN_OVERRIDE) Phase 7
+ * observations just persisted for this article+extractionSource — the
+ * same filter getClusterOriginSummary.ts already uses, kept identical here
+ * so claim extraction and Phase 8's own reasoning never disagree about
+ * which observations are "current." Bounded: at most
+ * MAX_OBSERVATIONS_PER_ARTICLE (20) rows per extractionSource.
+ */
+async function loadCurrentObservationsForClaims(
+  articleId: string,
+  extractionSource: ProvenanceExtractionSource,
+): Promise<AttributedStatementSourceObservation[]> {
+  const rows = await prisma.provenanceObservation.findMany({
+    where: {
+      articleId,
+      extractionSource,
+      OR: [{ extractorVersion: EXTRACTOR_VERSION }, { reviewState: "ADMIN_OVERRIDE" }],
+    },
+    select: { entityId: true, startOffset: true, endOffset: true, confidence: true },
+  });
+  return rows.map((r) => ({
+    entityId: r.entityId,
+    startOffset: r.startOffset,
+    endOffset: r.endOffset,
+    confidence: r.confidence as "HIGH" | "MEDIUM",
+  }));
+}
+
+/**
+ * Runs Phase 10B's deterministic claim extraction (NUMERICAL_ASSERTION +
+ * ATTRIBUTED_STATEMENT — see src/lib/claims/) against this newly-created
+ * article's title and (if present) its fuller sanitized feed text, mirroring
+ * extractAndPersistProvenance's own TITLE/FEED_TEXT split exactly.
+ * ATTRIBUTED_STATEMENT claims are built from the Phase 7 observations
+ * extractAndPersistProvenance already persisted for the SAME text buffer —
+ * never independently re-detected (see buildAttributedStatementClaims.ts).
+ *
+ * Wrapped in its own try/catch, isolated from both the caller and from
+ * provenance extraction: an unexpected failure here must never propagate
+ * up and be mistaken for an article-creation or provenance-extraction
+ * failure.
+ */
+async function extractAndPersistClaims(
+  articleId: string,
+  title: string,
+  sanitizedFeedText: string,
+): Promise<void> {
+  try {
+    const titleObservations = await loadCurrentObservationsForClaims(articleId, "TITLE");
+    await persistClaimsForArticle(prisma, {
+      articleId,
+      text: title,
+      extractionSource: "TITLE",
+      observations: titleObservations,
+    });
+    if (sanitizedFeedText) {
+      const feedObservations = await loadCurrentObservationsForClaims(articleId, "FEED_TEXT");
+      await persistClaimsForArticle(prisma, {
+        articleId,
+        text: sanitizedFeedText,
+        extractionSource: "FEED_TEXT",
+        observations: feedObservations,
+      });
+    }
+  } catch (err) {
+    console.error(`[ingest] claim extraction failed for article ${articleId}:`, err);
   }
 }
 
