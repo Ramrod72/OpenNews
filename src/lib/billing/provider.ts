@@ -50,6 +50,8 @@ export interface BillingFailure {
 export interface CheckoutSessionSuccess {
   ok: true;
   url: string;
+  /** The Stripe Checkout Session id (e.g. "cs_..."), stored on CheckoutIntent for reconciliation — see src/lib/billing/checkoutIntent.ts. */
+  sessionId: string;
 }
 export type CheckoutSessionResult = CheckoutSessionSuccess | BillingFailure;
 

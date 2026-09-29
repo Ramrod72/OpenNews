@@ -302,6 +302,7 @@ model User {
   topics                 UserTopic[]
   usageRecords           UsageRecord[]
   notificationPreference NotificationPreference?
+  checkoutIntent         CheckoutIntent?
 }
 
 /// A consumer login session. Unlike the admin's stateless signed cookie,
@@ -419,6 +420,51 @@ model Subscription {
 
   @@index([userId])
   @@index([status])
+}
+
+/// Pre-merge concurrency hardening (Phase 12B follow-up) — closes the race
+/// where two concurrent first-purchase requests for the same user could
+/// each create their own real Stripe Checkout Session before either
+/// completed, risking two simultaneous paid subscriptions. Exactly ONE row
+/// per user (`userId` is `@unique`), mirroring Subscription's own
+/// one-row-per-user invariant — a fresh attempt UPDATES this row in place
+/// rather than inserting a second one. See src/lib/billing/checkoutIntent.ts
+/// for reserveOrReuseCheckoutIntent(), the only writer of this table, and
+/// its own doc comment for the full concurrency argument (why the DB's
+/// unique constraint, not just an application-level check, is the actual
+/// enforcement point under Postgres's MVCC, and why the derived Stripe
+/// idempotency key is scoped to one attempt rather than to the user+plan
+/// forever).
+model CheckoutIntent {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The plan slug this attempt is for — a second concurrent attempt for a
+  /// DIFFERENT plan while this one is still pending is rejected outright
+  /// (never silently switched), so a user can't have two in-flight
+  /// attempts for different plans racing each other.
+  planSlug String
+
+  /// "pending" | "completed" | "abandoned". Only "pending" rows are ever
+  /// reused/extended in place; any other value (or an expired "pending"
+  /// row) is eligible to be atomically overwritten by a fresh attempt.
+  status String @default("pending")
+
+  /// The real Stripe Checkout Session id, once created — stored for
+  /// reconciliation/debugging only; never re-derived from client input.
+  externalCheckoutSessionId String?
+
+  /// Refreshed every time this row is reused for a genuinely NEW attempt
+  /// (as opposed to a retry of the SAME attempt) — this is what makes the
+  /// derived Stripe idempotency key change on a new attempt while staying
+  /// stable across retries of one attempt. See checkoutIntent.ts.
+  createdAt DateTime @default(now())
+
+  /// A "pending" row past this time is treated as abandoned and is free to
+  /// be reused by a fresh attempt — this is what guarantees a user is
+  /// never permanently blocked from retrying.
+  expiresAt DateTime
 }
 
 /// Records that a given Stripe webhook event has been fully, successfully

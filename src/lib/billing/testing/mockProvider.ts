@@ -1,6 +1,7 @@
 import type {
   BillingFailureReason,
   BillingProvider,
+  CheckoutSessionSuccess,
   NormalizedSubscription,
   WebhookVerifyResult,
 } from "../provider";
@@ -29,6 +30,16 @@ export interface MockBillingProviderState {
   customerCalls: Array<{ email: string; veriqenUserId: string }>;
   /** Maps a checkout session id (as returned by createCheckoutSession's fixed url) to a subscription id. */
   checkoutSessionSubscriptions: Map<string, string | null>;
+  /**
+   * Maps an idempotencyKey to the CheckoutSessionSuccess it previously
+   * produced — mirrors real Stripe's own idempotency-key cache
+   * (https://stripe.com/docs/api/idempotent_requests): a SECOND call
+   * presenting the SAME key gets back the SAME session/url rather than
+   * creating a new one, which is exactly the behavior
+   * reserveOrReuseCheckoutIntent()'s attempt-scoped key depends on to
+   * collapse genuinely concurrent retries of one attempt into one session.
+   */
+  idempotencyCache: Map<string, CheckoutSessionSuccess>;
   /** Records every verifyWebhookEvent call's raw arguments for assertions (e.g. proving a caller read the raw body, not a re-serialized one). */
   webhookVerifyCalls: Array<{ rawBody: string; signatureHeader: string | null }>;
 }
@@ -64,6 +75,7 @@ export function createMockBillingProvider(
     customerCalls: [],
     checkoutSessionSubscriptions: new Map(),
     webhookVerifyCalls: [],
+    idempotencyCache: new Map(),
   };
   let nextWebhookResult: WebhookVerifyResult | null = null;
 
@@ -95,9 +107,17 @@ export function createMockBillingProvider(
         priceId: params.priceId,
         idempotencyKey: params.idempotencyKey,
       });
+      const cached = state.idempotencyCache.get(params.idempotencyKey);
+      if (cached) return cached;
       if (options.checkoutFailure) return { ok: false, reason: options.checkoutFailure };
       const sessionId = `cs_mock_${state.checkoutCalls.length}`;
-      return { ok: true, url: `https://checkout.stripe.test/${sessionId}` };
+      const result: CheckoutSessionSuccess = {
+        ok: true,
+        url: `https://checkout.stripe.test/${sessionId}`,
+        sessionId,
+      };
+      state.idempotencyCache.set(params.idempotencyKey, result);
+      return result;
     },
 
     async createPortalSession(params) {

@@ -51,6 +51,11 @@ export async function POST(req: Request) {
       case "ignored_event_type":
       case "unknown_customer":
       case "unknown_price":
+      case "duplicate_subscription_conflict":
+        // Acknowledged (2xx) in every case — none of these are something
+        // a Stripe retry could ever resolve. duplicate_subscription_conflict
+        // in particular is already logged loudly inside webhookSync.ts and
+        // requires human reconciliation, not a repeated delivery.
         return NextResponse.json({ received: true });
       case "retryable_failure":
         // Deliberately a 500, not a 2xx: the event is NOT marked

@@ -59,6 +59,11 @@ export async function POST(req: Request) {
         },
         { status: 409 },
       );
+    case "checkout_in_progress":
+      return NextResponse.json(
+        { error: "A checkout attempt is already in progress. Please wait or try again shortly." },
+        { status: 409 },
+      );
     case "unavailable":
       return NextResponse.json({ error: "Checkout is temporarily unavailable." }, { status: 503 });
   }

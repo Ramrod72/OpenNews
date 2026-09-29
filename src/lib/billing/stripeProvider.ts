@@ -106,7 +106,7 @@ export function createStripeProvider(config: {
             detail: "Checkout Session was created without a url",
           };
         }
-        return { ok: true, url: session.url };
+        return { ok: true, url: session.url, sessionId: session.id };
       } catch (err) {
         return { ok: false, ...classifyError(err) };
       }

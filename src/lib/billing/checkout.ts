@@ -1,15 +1,21 @@
 import type { PrismaClient } from "@prisma/client";
-import { randomUUID } from "node:crypto";
 import { getSiteUrl } from "@/lib/siteUrl";
 import { grantsPaidAccess } from "@/lib/entitlements";
 import type { BillingConfig } from "./config";
 import type { BillingProvider } from "./provider";
 import { isPaidPlanSlug, priceIdForPlan, type PaidPlanSlug } from "./planMapping";
+import {
+  attachCheckoutSessionId,
+  deriveCheckoutIdempotencyKey,
+  releaseCheckoutIntent,
+  reserveOrReuseCheckoutIntent,
+} from "./checkoutIntent";
 
 export type CheckoutOutcome =
   | { status: "ok"; url: string }
   | { status: "invalid_plan" }
   | { status: "already_subscribed" }
+  | { status: "checkout_in_progress" }
   | { status: "unavailable" };
 
 /**
@@ -50,8 +56,25 @@ export async function createCheckoutForUser(
     return { status: "already_subscribed" };
   }
 
+  // Concurrency gate: reserved BEFORE any customer/session creation, so
+  // this also collapses the customer-creation race (User.externalCustomerId
+  // has no per-write concurrency check of its own — see checkoutIntent.ts's
+  // own doc comment for why the intent reservation, not just Stripe's
+  // idempotency key, is the thing that must run first).
+  const reservation = await reserveOrReuseCheckoutIntent(prisma, {
+    userId: params.userId,
+    planSlug: plan,
+  });
+  if (!reservation.ok) {
+    return { status: "checkout_in_progress" };
+  }
+  const intent = reservation.intent;
+
   const user = await prisma.user.findUnique({ where: { id: params.userId } });
-  if (!user) return { status: "unavailable" };
+  if (!user) {
+    await releaseCheckoutIntent(prisma, intent.id);
+    return { status: "unavailable" };
+  }
 
   let customerId = user.externalCustomerId;
   if (!customerId) {
@@ -59,7 +82,10 @@ export async function createCheckoutForUser(
       email: params.userEmail,
       veriqenUserId: params.userId,
     });
-    if (!created.ok) return { status: "unavailable" };
+    if (!created.ok) {
+      await releaseCheckoutIntent(prisma, intent.id);
+      return { status: "unavailable" };
+    }
     customerId = created.customerId;
     try {
       await prisma.user.update({
@@ -71,6 +97,7 @@ export async function createCheckoutForUser(
       // constraint otherwise rejected this write) — fail closed rather
       // than proceeding with a customer id that might not be the one this
       // user's own row now actually has.
+      await releaseCheckoutIntent(prisma, intent.id);
       return { status: "unavailable" };
     }
   }
@@ -87,13 +114,26 @@ export async function createCheckoutForUser(
     successUrl: `${siteUrl}/account?checkout=success`,
     cancelUrl: `${siteUrl}/account?checkout=canceled`,
     metadata: { veriqenUserId: params.userId },
-    // Reused only by the Stripe SDK's own internal retry of THIS single
-    // call (e.g. a network blip) — a separate call (a genuine double
-    // submission) gets its own fresh key, and is harmless either way
-    // (see this module's own doc comment and ARCHITECTURE.md's Phase 12B
-    // section on double-checkout).
-    idempotencyKey: randomUUID(),
+    // Scoped to this CheckoutIntent attempt — stable across retries of
+    // THIS attempt (so Stripe's own idempotency layer collapses those
+    // into one session), fresh whenever the intent row is legitimately
+    // reused for a genuinely NEW attempt (see checkoutIntent.ts).
+    idempotencyKey: deriveCheckoutIdempotencyKey(intent),
   });
-  if (!result.ok) return { status: "unavailable" };
+  if (!result.ok) {
+    await releaseCheckoutIntent(prisma, intent.id);
+    return { status: "unavailable" };
+  }
+  // Best-effort only: the real Stripe Checkout Session already exists at
+  // this point (the user must still get their url), so a local failure to
+  // record its id for reconciliation must never fail the whole request or
+  // leave the user stuck on an error page after a real session was
+  // already created. A retry (same intent, same derived idempotency key)
+  // would get back this exact same session from Stripe regardless.
+  try {
+    await attachCheckoutSessionId(prisma, intent.id, result.sessionId);
+  } catch {
+    // Swallowed deliberately — see comment above.
+  }
   return { status: "ok", url: result.url };
 }

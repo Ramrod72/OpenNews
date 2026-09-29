@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import type { BillingConfig } from "./config";
 import type { BillingProvider, WebhookVerifySuccess } from "./provider";
 import { planSlugForPriceId } from "./planMapping";
+import { grantsPaidAccess } from "@/lib/entitlements";
 
 /**
  * The minimum sufficient webhook event set (Phase 12A Amendment B
@@ -45,6 +46,7 @@ export type WebhookSyncOutcome =
   | { outcome: "ignored_event_type" }
   | { outcome: "unknown_customer" }
   | { outcome: "unknown_price" }
+  | { outcome: "duplicate_subscription_conflict" }
   | { outcome: "retryable_failure"; reason: string };
 
 function isUniqueConstraintViolation(error: unknown): boolean {
@@ -146,12 +148,56 @@ export async function processWebhookEvent(
   }
 
   try {
-    await prisma.$transaction(
-      async (tx) => {
+    const txResult = await prisma.$transaction(
+      async (tx): Promise<{ conflict: boolean }> => {
         const existingSubscription = await tx.subscription.findFirst({
           where: { userId: user.id },
           orderBy: { createdAt: "desc" },
         });
+
+        // Defense in depth against an unexpected SECOND Stripe
+        // subscription for the same Veriqen user (e.g. the pre-Checkout
+        // concurrency gate in checkout.ts was bypassed, raced, or this
+        // user was subscribed through some other path entirely): if the
+        // local row already points at a DIFFERENT subscription id that
+        // currently grants paid access, this event's subscription is a
+        // genuine, unexplained duplicate — never silently overwrite the
+        // existing externalSubscriptionId, which would hide the first
+        // (still-active, still-billing) subscription from view. This is
+        // a structural conflict for a human to reconcile, not something
+        // any amount of Stripe retrying could resolve on its own, so —
+        // mirroring the unknown_customer/unknown_price precedent above —
+        // the event is still marked processed (not retryable), but the
+        // local Subscription row is left completely untouched. Never
+        // auto-cancels or refunds either subscription: that action isn't
+        // safe to take without a human confirming which one is the
+        // "real" one to keep.
+        const isDuplicateSubscriptionConflict =
+          existingSubscription !== null &&
+          existingSubscription.externalSubscriptionId !== null &&
+          existingSubscription.externalSubscriptionId !== subscription.id &&
+          grantsPaidAccess(existingSubscription.status);
+
+        if (isDuplicateSubscriptionConflict) {
+          console.error(
+            "[billing] duplicate_subscription_conflict:",
+            JSON.stringify({
+              userId: user.id,
+              customerId: subscription.customerId,
+              existingSubscriptionId: existingSubscription!.externalSubscriptionId,
+              existingStatus: existingSubscription!.status,
+              incomingSubscriptionId: subscription.id,
+              incomingStatus: subscription.status,
+              eventId: verified.eventId,
+              eventType: verified.eventType,
+            }),
+          );
+          await tx.processedWebhookEvent.create({
+            data: { id: verified.eventId, type: verified.eventType },
+          });
+          return { conflict: true };
+        }
+
         // Preserves the "exactly one Subscription row per user" invariant
         // (see prisma/schema.prisma's own doc comment) — updates the
         // existing row in place; never inserts a second row for this user.
@@ -191,12 +237,28 @@ export async function processWebhookEvent(
           });
         }
 
+        // Opportunistically frees this user's CheckoutIntent row now that
+        // Stripe has confirmed current state, rather than waiting out its
+        // TTL — never required for correctness (the TTL alone already
+        // guarantees a user is never permanently blocked), just lets a
+        // just-completed attempt's row be reused immediately by a later
+        // one. A no-op if there is no pending row.
+        await tx.checkoutIntent.updateMany({
+          where: { userId: user.id, status: "pending" },
+          data: { status: "completed" },
+        });
+
         await tx.processedWebhookEvent.create({
           data: { id: verified.eventId, type: verified.eventType },
         });
+        return { conflict: false };
       },
       { maxWait: 10_000, timeout: 10_000 },
     );
+
+    if (txResult.conflict) {
+      return { outcome: "duplicate_subscription_conflict" };
+    }
   } catch (err) {
     if (isUniqueConstraintViolation(err)) {
       // A concurrent delivery of the SAME event committed first — our
