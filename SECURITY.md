@@ -647,6 +647,61 @@ database snapshot (5 articles, a story cluster, provenance observations)
 migrated forward with zero data loss on every pre-existing table, and the
 new `Claim` table/relation confirmed functional immediately afterward.
 
+**Final adversarial merge-gate review — three additional defects found and
+fixed before merge readiness.** A second, independent adversarial pass
+against the finished PR (re-reading every file fresh rather than trusting
+the review above) found three further real defects:
+
+1. **LOW confidence had no independent guard at the point of persistence.**
+   `buildAttributedStatementClaims` copies an `ATTRIBUTED_STATEMENT`
+   claim's confidence straight through from a caller-supplied Phase 7
+   observation — a plain string column, not a database-enforced enum —
+   and `persistClaimsForArticle` had no runtime check rejecting a
+   non-HIGH/MEDIUM value before writing it, relying entirely on trusting
+   that Phase 7's own filtering never regresses and no row is ever
+   hand-edited. Reproduced by constructing an observation with
+   `confidence: "LOW"` (bypassing the TypeScript type) and confirming it
+   persisted verbatim. Fixed by reusing `isPersistableConfidence`
+   (already exported from `src/lib/validation/provenance.ts` and already
+   used by `persistObservations.ts`) as an independent filter at the
+   claim-persistence boundary, with a new `discardedLow` counter for
+   observability.
+2. **Single-linkage transitivity could merge dissimilar attributed
+   statements.** `groupAttributedStatements` previously used union-find
+   over any pair of claims clearing `SIMILARITY_THRESHOLD`, which means
+   three claims A/B/C where `sim(A,B)` and `sim(B,C)` both cleared the
+   threshold but `sim(A,C)` did not would still land in one group via B —
+   presenting two materially different statements as "the same common
+   assertion." Reproduced with an engineered token set verified against
+   the real `cosineSimilarity` implementation (`sim(A,B)=0.676`,
+   `sim(B,C)=0.676`, `sim(A,C)=0.399`, all below/above threshold as
+   labeled). Fixed by switching to deterministic **complete-linkage**
+   clustering: a claim only joins an existing cluster when it clears the
+   threshold against **every** member already in that cluster, never
+   merely one — the same bound (`MAX_GROUP_SIZE_FOR_TEXT_COMPARISON`)
+   keeps this just as cheap as the single-linkage version it replaced.
+3. **A numeric range or a hostile negative sign silently collapsed to a
+   false-precise value.** `"10-12 people were injured"` extracted as an
+   `EXACT` claim of `12` (silently discarding the range's lower bound),
+   and `"-5 people were injured"` extracted as `5` (silently discarding
+   the sign) — both present text that never asserted one definite
+   positive number as if it had. Fixed by refusing extraction whenever a
+   `-`/en-dash/em-dash is immediately adjacent (no intervening space) to
+   the matched digit run.
+
+All three are permanently regression-tested
+(`test/claimPersistence.integration.test.ts`,
+`src/lib/claims/buildClaimGroups.test.ts`,
+`src/lib/claims/extractNumericalAssertions.test.ts`). The same review
+additionally re-verified, via fresh direct attack rather than re-reading
+prior results: `safeHttpUrl` against every scheme/whitespace/credential/
+encoding trick relevant to this phase's new hrefs (all correctly
+rejected); a sentinel-value serialization sweep placing distinctive
+values in a claim's `id`, `entityId`, and a hostile confidence string,
+confirmed absent from the serialized view at all three entitlement tiers;
+and a 20,000-claim grouping stress test (1,000 articles × 20 claims
+across 50 distinct buckets) completing in ~31ms with correct results.
+
 ## Dependency scanning
 
 `npm audit` is not run in CI by default; run it locally before releases.
