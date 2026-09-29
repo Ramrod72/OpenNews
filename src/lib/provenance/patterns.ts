@@ -52,7 +52,14 @@ export interface AttributionCandidate {
 const ATTRIBUTION_VERB_ALTERNATION =
   "reported|reports|report|said|stated|states|confirmed|confirms|announced|announces|wrote|writes|found|finds|told|tells";
 
-const NEGATION_WORDS = new Set([
+/**
+ * Exported for reuse by Phase 10B's claims module (src/lib/claims/) —
+ * negation is a general-purpose precision guard, not specific to
+ * attribution, and Phase 10B's numerical-assertion extraction needs the
+ * exact same "did the text actually negate this?" check rather than a
+ * second, potentially-drifting word list.
+ */
+export const NEGATION_WORDS = new Set([
   "not",
   "never",
   "no",

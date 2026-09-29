@@ -45,6 +45,12 @@ What's in scope:
   surface, ever persisting a graph, or degrading into unbounded pairwise
   comparison work as a cluster grows; shared-source grouping being
   mistaken for, or presented as, proof of identical origin.
+- Coverage Comparison / claim extraction (Phase 10B) expanding the network
+  attack surface; an unbounded per-article claim table; unbounded
+  pairwise claim comparison as a cluster grows; a raw internal id
+  (especially a `ProvenanceEntity` id, which has no legitimate
+  consumer-facing use anywhere in the app) leaking into a client payload;
+  repetition being presented as, or confused with, corroboration.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -506,6 +512,195 @@ API were introduced: Story Intelligence lives entirely on the existing
 `/story/[slug]` canonical route, calling `getClusterOriginSummary`
 directly from server code exactly as Phase 8B intended, with zero new
 `fetch()` calls anywhere in the new files (structurally confirmed).
+
+**Coverage Comparison's client-serialization boundary (Phase 10B).**
+`src/lib/coverageComparisonView.ts`'s `buildCoverageComparisonView` is the
+ONE place internal `ClaimGroup`/`Claim` shapes (which carry a Claim's
+`id`, `entityId`, `startOffset`/`endOffset`, `claimExtractorVersion`,
+`reviewState`, `dedupeKey`, and raw confidence enum) are converted into
+anything a Client Component (`<ClaimEvidenceDrawer>`) can receive.
+Regression-tested by asserting none of those field names appear anywhere
+in `JSON.stringify(view)`, at every entitlement tier
+(`coverageComparisonView.test.ts`).
+
+An adversarial self-review pass specifically targeting this boundary
+found one real defect the field-name check above did not catch: a claim
+group's client-visible `key` field (used only for React reconciliation)
+was built as `` `${group.kind}-${group.numericUnit ?? group.entityId ?? "x"}-...` ``
+— for `ATTRIBUTED_STATEMENT` groups, this embedded the raw
+`ProvenanceEntity` id **value** directly into a string sent to the Client
+Component's props, which a field-name-only check can't detect (the leak
+is a value, not a key named `entityId`). Fixed by building `key`
+exclusively from already-consumer-safe fields (kind, a positional index,
+numeric fields, and the group's first article id — article ids are
+already exposed elsewhere in the same view for internal `/sources/[id]`
+routing, unlike a `ProvenanceEntity` id, which is never otherwise
+consumer-facing). Regression-tested with a group carrying a distinctive
+sentinel entity id, asserting it never appears in `view.claimGroups[0].key`
+or anywhere in `JSON.stringify(view)`.
+
+A second defect the same review found: the "N cited by Reuters" source-
+overlap line originally joined _every_ overlapping entity's name into one
+string while reading only the _first_ entry's `overlapArticleCount` —
+if a claim group's `sourceOverlap` ever contained two different entities
+with two different counts (e.g. Reuters cited by 9 of 15 articles, AP by
+3), the rendered line would misrepresent AP's count as if it were shared
+with Reuters. Fixed so every `sourceOverlap` entry renders its own line
+with its own count; regression-tested structurally in
+`test/coverageComparisonSafety.test.ts`.
+
+Entitlement gating happens in the data itself, before anything reaches a
+Client Component — never via CSS hiding pre-fetched premium evidence. A
+viewer without `coverage_comparison_full` (Free, logged-out, or an
+unentitled account) gets a view whose claim groups are truncated to
+`MAX_FREE_CLAIM_GROUPS` (2) and whose `sourceOverlap`/`occurrences` fields
+are `undefined` on every group; a viewer with `coverage_comparison_full`
+but not `claim_comparison` (Basic) gets `sourceOverlap` but never
+`occurrences` (per-article evidence, Pro-only) — regression-tested
+directly (`coverageComparisonView.test.ts`'s Free/Basic/Pro suites, plus
+a real-database integration test exercising all three tiers plus
+logged-out against `loadCoverageComparison`). No new entitlement key was
+added — both `coverage_comparison_full` and `claim_comparison` already
+existed on the Basic/Pro plans respectively.
+
+**Entitlement-lookup failure fails closed, independently per key.**
+`loadCoverageComparison` gives `coverage_comparison_full` and
+`claim_comparison` each their own try/catch, separate from the data-
+loading try/catch: if either `can()` call throws, that flag resolves to
+`false` rather than granting access or hiding data that loaded
+successfully — regression-tested against the real orchestrator with
+`can` mocked to reject
+(`test/coverageComparisonEntitlementFailure.integration.test.ts`).
+
+**No dangerouslySetInnerHTML; hostile text renders as plain text.**
+Claim text, headline text, and evidence snippets all render as plain
+React text (confirmed by a structural test scanning every new component
+file) — hostile HTML/script/Unicode-bidi content in a claim's `rawText`
+(ultimately derived from feed-supplied article text) displays harmlessly
+as literal text, never as markup. Persistence itself was also
+adversarially tested against hostile input (`<script>` tags, quotes,
+ampersands, embedded RTL override characters) to confirm it never throws
+or corrupts a row.
+
+**Article URLs are scheme-sanitized before they ever reach a Client
+Component**, reusing the exact `safeHttpUrl` gate Phase 9B established
+(`src/lib/security/sanitize.ts`) for every occurrence/headline-entry
+article link; a non-http(s) scheme becomes `""` and renders as plain,
+non-clickable text. Publisher links are always an internal Next.js
+`<Link>` to `/sources/[id]`, built only from the article's own
+already-loaded `Source.id` — never an arbitrary URL.
+
+**Claim-cap enforcement is concurrency-safe.** `MAX_CLAIMS_PER_ARTICLE`
+(20) is enforced with the identical transaction shape
+`persistObservations.ts` established for Phase 8's own
+previously-fixed observation-cap race: the pre-write row count and the
+writes that consume the remaining budget both run inside one
+`prisma.$transaction`, so two concurrent `persistClaimsForArticle` calls
+for the same `(articleId, claimExtractorVersion)` — title extraction and
+feed-text extraction both running during the same ingestion request, or
+two overlapping backfill-worker batches — can never both read a stale
+pre-write count and collectively persist more than 20 rows.
+Adversarially tested with two genuinely concurrent calls
+(`test/claimPersistence.integration.test.ts`).
+
+**No uncontrolled O(n²) comparison as a cluster grows.**
+`NUMERICAL_ASSERTION` grouping needs no pairwise comparison at all (exact
+bucket match is both safer and linear); `ATTRIBUTED_STATEMENT` grouping
+buckets by canonical entity first and skips text-similarity comparison
+entirely for any bucket larger than `MAX_GROUP_SIZE_FOR_TEXT_COMPARISON`
+(25) — the same defensive cap shape `excerptSimilarity.ts` already
+established for Phase 8. Verified against a 1,000-claim single bucket
+completing well inside the test's time budget with zero pairwise
+comparisons (`buildClaimGroups.test.ts`).
+
+**Repetition is never presented as corroboration.** This is the phase's
+central epistemic-safety property, and it is checked three ways: (1)
+structurally, `computeSourceOverlap` returns a field that is never
+subtracted from or combined with `articleCount` anywhere in the
+codebase; (2) by a real-database integration test asserting both facts
+are exposed separately for a cluster where every article genuinely does
+cite Reuters (`test/coverageComparison.integration.test.ts`); and (3) by
+a semantic-regression suite that greps every Coverage-Comparison-related
+source file for a list of specifically forbidden affirmative phrasings —
+"N sources independently confirmed," "verified the claim," "corroborated
+the story," "same dispatch," "plagiarized," "did not report," "failed to
+report," and others — while still permitting those same underlying words
+inside a negated disclaimer sentence explaining what Veriqen does _not_
+claim (`test/coverageComparisonSafety.test.ts`).
+
+**Copyright/text-display bounds.** Representative claim text and
+occurrence text are bounded to `MAX_CLAIM_TEXT_LENGTH` (~200 characters)
+at persistence time; occurrences per group are capped at
+`MAX_OCCURRENCES_PER_GROUP_DISPLAY` (50); claim groups displayed are
+capped at `MAX_CLAIM_GROUPS_DISPLAYED` (50, Basic+) or
+`MAX_FREE_CLAIM_GROUPS` (2, Free) — short structured assertions only,
+never large quantities of copied publisher text.
+
+**Zero new network fetch, one additive migration, no new public API.**
+Coverage Comparison lives entirely on the existing `/story/[slug]`
+canonical route; a structural test confirms no `/api/claims`,
+`/api/coverage`, or `/api/coverage-comparison` route exists and that no
+API route file references any Coverage Comparison internals. The one
+schema change (`Claim`, plus its relations on `Article` and
+`ProvenanceEntity`) was verified against a populated pre-Phase-10B
+database snapshot (5 articles, a story cluster, provenance observations)
+migrated forward with zero data loss on every pre-existing table, and the
+new `Claim` table/relation confirmed functional immediately afterward.
+
+**Final adversarial merge-gate review — three additional defects found and
+fixed before merge readiness.** A second, independent adversarial pass
+against the finished PR (re-reading every file fresh rather than trusting
+the review above) found three further real defects:
+
+1. **LOW confidence had no independent guard at the point of persistence.**
+   `buildAttributedStatementClaims` copies an `ATTRIBUTED_STATEMENT`
+   claim's confidence straight through from a caller-supplied Phase 7
+   observation — a plain string column, not a database-enforced enum —
+   and `persistClaimsForArticle` had no runtime check rejecting a
+   non-HIGH/MEDIUM value before writing it, relying entirely on trusting
+   that Phase 7's own filtering never regresses and no row is ever
+   hand-edited. Reproduced by constructing an observation with
+   `confidence: "LOW"` (bypassing the TypeScript type) and confirming it
+   persisted verbatim. Fixed by reusing `isPersistableConfidence`
+   (already exported from `src/lib/validation/provenance.ts` and already
+   used by `persistObservations.ts`) as an independent filter at the
+   claim-persistence boundary, with a new `discardedLow` counter for
+   observability.
+2. **Single-linkage transitivity could merge dissimilar attributed
+   statements.** `groupAttributedStatements` previously used union-find
+   over any pair of claims clearing `SIMILARITY_THRESHOLD`, which means
+   three claims A/B/C where `sim(A,B)` and `sim(B,C)` both cleared the
+   threshold but `sim(A,C)` did not would still land in one group via B —
+   presenting two materially different statements as "the same common
+   assertion." Reproduced with an engineered token set verified against
+   the real `cosineSimilarity` implementation (`sim(A,B)=0.676`,
+   `sim(B,C)=0.676`, `sim(A,C)=0.399`, all below/above threshold as
+   labeled). Fixed by switching to deterministic **complete-linkage**
+   clustering: a claim only joins an existing cluster when it clears the
+   threshold against **every** member already in that cluster, never
+   merely one — the same bound (`MAX_GROUP_SIZE_FOR_TEXT_COMPARISON`)
+   keeps this just as cheap as the single-linkage version it replaced.
+3. **A numeric range or a hostile negative sign silently collapsed to a
+   false-precise value.** `"10-12 people were injured"` extracted as an
+   `EXACT` claim of `12` (silently discarding the range's lower bound),
+   and `"-5 people were injured"` extracted as `5` (silently discarding
+   the sign) — both present text that never asserted one definite
+   positive number as if it had. Fixed by refusing extraction whenever a
+   `-`/en-dash/em-dash is immediately adjacent (no intervening space) to
+   the matched digit run.
+
+All three are permanently regression-tested
+(`test/claimPersistence.integration.test.ts`,
+`src/lib/claims/buildClaimGroups.test.ts`,
+`src/lib/claims/extractNumericalAssertions.test.ts`). The same review
+additionally re-verified, via fresh direct attack rather than re-reading
+prior results: `safeHttpUrl` against every scheme/whitespace/credential/
+encoding trick relevant to this phase's new hrefs (all correctly
+rejected); a sentinel-value serialization sweep placing distinctive
+values in a claim's `id`, `entityId`, and a hostile confidence string,
+confirmed absent from the serialized view at all three entitlement tiers;
+and a 20,000-claim grouping stress test (1,000 articles × 20 claims
+across 50 distinct buckets) completing in ~31ms with correct results.
 
 ## Dependency scanning
 
