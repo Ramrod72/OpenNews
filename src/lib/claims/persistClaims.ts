@@ -10,7 +10,10 @@ import {
   type ExtractedAttributedStatement,
 } from "./buildAttributedStatementClaims";
 import { normalizeClaimText } from "./normalize";
-import type { ProvenanceExtractionSource } from "@/lib/validation/provenance";
+import {
+  isPersistableConfidence,
+  type ProvenanceExtractionSource,
+} from "@/lib/validation/provenance";
 
 /**
  * Bumped whenever claim-extraction logic changes meaningfully (a new unit
@@ -123,6 +126,18 @@ export interface PersistClaimsResult {
   persisted: number;
   /** Candidates that were otherwise persistable but were dropped solely by MAX_CLAIMS_PER_ARTICLE. Observability/tests only. */
   cappedByLimit: number;
+  /**
+   * Candidates discarded solely for carrying a non-persistable confidence
+   * value (i.e. not HIGH/MEDIUM). extractNumericalAssertions never
+   * produces this, but an ATTRIBUTED_STATEMENT claim's confidence is
+   * copied through from a caller-supplied Phase 7 observation (a plain
+   * string column, not a database-enforced enum) — this is an independent
+   * defense-in-depth guard at the point of persistence, the same one
+   * persistObservations.ts's own isPersistableConfidence check already
+   * establishes, rather than trusting that every caller only ever supplies
+   * an already-filtered observation. Observability/tests only.
+   */
+  discardedLow: number;
 }
 
 /**
@@ -165,7 +180,22 @@ export async function persistClaimsForArticle(
     maxRawTextLength: MAX_CLAIM_TEXT_LENGTH,
   });
 
-  const prepared: PreparedClaim[] = [...numerical, ...attributed].map((c) =>
+  // Defense-in-depth: extractNumericalAssertions never produces anything
+  // but HIGH/MEDIUM, but an ATTRIBUTED_STATEMENT's confidence is copied
+  // through from a caller-supplied Phase 7 observation — a plain string
+  // column, not a database-enforced enum. Never trust that upstream
+  // filtering alone keeps LOW out; independently discard anything that
+  // isn't persistable right here, the same guard persistObservations.ts
+  // already applies at its own point of persistence.
+  const candidates = [...numerical, ...attributed];
+  let discardedLow = 0;
+  const persistable = candidates.filter((c) => {
+    if (isPersistableConfidence(c.confidence)) return true;
+    discardedLow += 1;
+    return false;
+  });
+
+  const prepared: PreparedClaim[] = persistable.map((c) =>
     prepareClaim(c, params.articleId, claimExtractorVersion, params.extractionSource),
   );
 
@@ -227,7 +257,7 @@ export async function persistClaimsForArticle(
     }
   });
 
-  return { persisted, cappedByLimit };
+  return { persisted, cappedByLimit, discardedLow };
 }
 
 /**

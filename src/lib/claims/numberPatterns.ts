@@ -165,6 +165,19 @@ export function findNumberCandidates(text: string): NumberCandidate[] {
       if (match.index === undefined) continue;
       const raw = match[1];
       if (!raw) continue;
+
+      // A "-" (or en/em dash) immediately adjacent to the digit, with no
+      // space, means either a negative sign our unit rules don't support
+      // (e.g. hostile "-5 people were injured") or, far more commonly in
+      // real news text, a written-out range ("10-12 people were injured")
+      // whose second number this rule would otherwise silently present as
+      // if it were the sole exact assertion — a false-precision claim
+      // about text that never actually asserted one definite number.
+      // Refusing extraction here (precision over recall) is safer than
+      // guessing which end of a range, or whether a sign, was meant.
+      const charBefore = text[match.index - 1];
+      if (charBefore === "-" || charBefore === "–" || charBefore === "—") continue;
+
       const numericValue = parseNumberToken(raw, match[0]);
       if (numericValue === null) continue;
 

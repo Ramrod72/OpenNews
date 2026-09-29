@@ -232,6 +232,44 @@ describe("ADMIN_OVERRIDE preservation", () => {
   });
 });
 
+describe("LOW confidence can never persist, even via a hostile caller-supplied observation", () => {
+  it("discards an ATTRIBUTED_STATEMENT candidate whose confidence is the runtime string LOW, bypassing the TypeScript type entirely", async () => {
+    const articleId = await makeArticle();
+    const text = "Officials said the bridge would reopen next week.";
+    // A real ProvenanceObservation.confidence column is a plain string, not
+    // a database-enforced enum — if Phase 7's own filtering ever regressed,
+    // or a row were hand-edited, a caller could hand this function an
+    // observation whose confidence is literally "LOW". This attack found a
+    // real defect during the final adversarial review: buildAttributedStatementClaims
+    // copies obs.confidence straight through, and persistClaimsForArticle
+    // had no independent runtime guard rejecting it before persistence.
+    const hostileObservation = {
+      entityId: null,
+      startOffset: 0,
+      endOffset: text.length,
+      confidence: "LOW",
+    } as unknown as {
+      entityId: string | null;
+      startOffset: number;
+      endOffset: number;
+      confidence: "HIGH" | "MEDIUM";
+    };
+
+    const result = await persistClaimsForArticle(prisma, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      observations: [hostileObservation],
+    });
+
+    expect(result.discardedLow).toBe(1);
+    expect(result.persisted).toBe(0);
+    const rows = await prisma.claim.findMany({ where: { articleId } });
+    expect(rows).toHaveLength(0);
+    expect(rows.some((r) => r.confidence === "LOW")).toBe(false);
+  });
+});
+
 describe("hostile/malformed text never crashes persistence", () => {
   it("persists safely against hostile HTML/Unicode text", async () => {
     const articleId = await makeArticle();

@@ -219,42 +219,46 @@ function groupAttributedStatements(
     if (!canonicalId) continue; // unresolved entity — never grouped across articles (see doc comment)
     if (bucket.length > MAX_GROUP_SIZE_FOR_TEXT_COMPARISON) continue; // too large to safely compare — degrade to no grouping, not unsafe grouping
 
+    // Sorted by id first so clustering never depends on the order claims
+    // happened to arrive in from the database.
+    const sortedBucket = [...bucket].sort((a, b) => a.id.localeCompare(b.id));
     const vectors = buildTfIdfVectors(
-      bucket.map((c) => ({ id: c.id, tokens: c.normalizedText.split(" ").filter(Boolean) })),
+      sortedBucket.map((c) => ({ id: c.id, tokens: c.normalizedText.split(" ").filter(Boolean) })),
     );
 
-    // Deterministic single-linkage clustering via connected components:
-    // union two claims when their cosine similarity clears the threshold.
-    const parent = new Map<string, string>(bucket.map((c) => [c.id, c.id]));
-    function find(id: string): string {
-      let root = id;
-      while (parent.get(root) !== root) root = parent.get(root)!;
-      return root;
-    }
-    function union(a: string, b: string) {
-      const ra = find(a);
-      const rb = find(b);
-      if (ra !== rb) parent.set(ra, rb);
-    }
-
-    for (let i = 0; i < bucket.length; i++) {
-      for (let j = i + 1; j < bucket.length; j++) {
-        const a = bucket[i]!;
-        const b = bucket[j]!;
-        const similarity = cosineSimilarity(vectors.get(a.id)!, vectors.get(b.id)!);
-        if (similarity >= SIMILARITY_THRESHOLD) union(a.id, b.id);
+    // Deterministic COMPLETE-linkage clustering: a claim joins an existing
+    // cluster only when it clears SIMILARITY_THRESHOLD against EVERY
+    // member already in that cluster — never merely one. A prior
+    // single-linkage version (union two claims whenever ANY pair cleared
+    // the threshold) allowed transitive chaining to silently merge two
+    // claims with LOW mutual similarity into the same "common assertion"
+    // group merely because both happened to be similar to some third,
+    // intermediate claim (A~B and B~C would merge A and C into one group
+    // even when sim(A,C) was well below threshold) — a real defect found
+    // during the final adversarial review, since it violates the locked
+    // "when uncertain, DO NOT GROUP" rule. Complete-linkage can never
+    // produce a within-group pair below threshold, at the cost of
+    // sometimes splitting into more (smaller, but internally coherent)
+    // groups than a looser algorithm would — the correct direction to err
+    // in, since a false split only under-counts a common assertion, while
+    // a false merge would misrepresent two different statements as the
+    // same one to a consumer.
+    const clusters: ClaimForGrouping[][] = [];
+    for (const claim of sortedBucket) {
+      const vector = vectors.get(claim.id)!;
+      const fittingCluster = clusters.find((cluster) =>
+        cluster.every(
+          (member) => cosineSimilarity(vector, vectors.get(member.id)!) >= SIMILARITY_THRESHOLD,
+        ),
+      );
+      if (fittingCluster) {
+        fittingCluster.push(claim);
+      } else {
+        clusters.push([claim]);
       }
     }
 
-    const clusters = new Map<string, ClaimForGrouping[]>();
-    for (const claim of bucket) {
-      const root = find(claim.id);
-      const list = clusters.get(root) ?? [];
-      list.push(claim);
-      clusters.set(root, list);
-    }
-
-    for (const cluster of clusters.values()) {
+    for (const cluster of clusters) {
       if (distinctArticleCount(cluster) < MIN_ARTICLES_FOR_GROUP) continue;
       const representative = pickRepresentative(cluster);
       const members = oneClaimPerArticle(cluster);

@@ -250,6 +250,60 @@ describe("K — different entity, similar wording never groups", () => {
   });
 });
 
+describe("K2 — single-linkage transitivity never chains dissimilar claims through an intermediate one", () => {
+  it("does not merge A and C into one group merely because both are similar to B, when sim(A,C) itself is below threshold", () => {
+    // Engineered via direct cosineSimilarity calls against the real
+    // buildTfIdfVectors/cosineSimilarity implementation this module reuses:
+    // sim(A,B) = 0.676, sim(B,C) = 0.676 (both >= SIMILARITY_THRESHOLD =
+    // 0.6), but sim(A,C) = 0.399 (< 0.6). A prior single-linkage
+    // implementation (union any pair above threshold via connected
+    // components) transitively merged A and C into the same "common
+    // assertion" group through B — found during the final adversarial
+    // merge-gate review as a real, high-priority defect: it violates the
+    // locked "when uncertain, DO NOT GROUP" rule, since A ("hospital
+    // funding increase") and C ("school layoffs") are materially
+    // different statements that were never actually mutually similar.
+    const claims = [
+      attrClaim({
+        id: "cA",
+        articleId: "articleA",
+        entityId: "ent-reuters",
+        normalizedText: "mayor said budget increase hospital",
+      }),
+      attrClaim({
+        id: "cB",
+        articleId: "articleB",
+        entityId: "ent-reuters",
+        normalizedText: "mayor said budget increase school",
+      }),
+      attrClaim({
+        id: "cC",
+        articleId: "articleC",
+        entityId: "ent-reuters",
+        normalizedText: "said budget increase school layoffs",
+      }),
+    ];
+    const groups = buildClaimGroups({
+      claims,
+      entities: noEntities,
+      articlesById: articlesById(["articleA", "articleB", "articleC"]),
+      sharedReportingSourceGroups: noSourceGroups,
+    });
+
+    const mergedAC = groups.find(
+      (g) => g.articleIds.includes("articleA") && g.articleIds.includes("articleC"),
+    );
+    expect(mergedAC).toBeUndefined();
+
+    // A and B, which ARE mutually similar, still correctly group together.
+    const mergedAB = groups.find(
+      (g) => g.articleIds.includes("articleA") && g.articleIds.includes("articleB"),
+    );
+    expect(mergedAB).toBeDefined();
+    expect(mergedAB?.articleIds).toEqual(["articleA", "articleB"]);
+  });
+});
+
 describe("L — unresolved entity never groups across articles", () => {
   it("two unresolved (entityId null) attributed claims never group, even with identical text", () => {
     const claims = [

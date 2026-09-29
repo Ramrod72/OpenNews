@@ -239,6 +239,61 @@ describe("ATTRIBUTED_STATEMENT group's internal entityId value never leaks into 
   });
 });
 
+describe("sentinel-value serialization sweep (final adversarial merge-gate review, section 27)", () => {
+  it("no sentinel value placed in member.id, entityId, or a hostile confidence string ever appears in the serialized view, at any entitlement tier", () => {
+    const sentinelClaimIdA = "SENTINEL_CLAIM_ID_AAAA11111";
+    const sentinelClaimIdB = "SENTINEL_CLAIM_ID_BBBB22222";
+    const sentinelEntityId = "SENTINEL_ENTITY_ID_CCCC33333";
+    const sentinelConfidence = "SENTINEL_CONFIDENCE_DDDD";
+
+    const attributedGroup = group({
+      kind: "ATTRIBUTED_STATEMENT",
+      representativeText: "Sentinel Entity said the bridge would reopen next week.",
+      numericUnit: undefined,
+      numericValue: undefined,
+      numericQualifier: undefined,
+      entityId: sentinelEntityId,
+      members: [
+        member(sentinelClaimIdA, "a1", {
+          kind: "ATTRIBUTED_STATEMENT",
+          entityId: sentinelEntityId,
+          confidence: sentinelConfidence as unknown as "HIGH",
+        }),
+        member(sentinelClaimIdB, "a2", {
+          kind: "ATTRIBUTED_STATEMENT",
+          entityId: sentinelEntityId,
+          confidence: sentinelConfidence as unknown as "HIGH",
+        }),
+      ],
+    });
+
+    for (const [hasFullAccess, hasClaimComparison] of [
+      [false, false],
+      [true, false],
+      [true, true],
+    ] as const) {
+      const view = buildCoverageComparisonView({
+        articleCount: 2,
+        publisherCount: 2,
+        claimGroups: [attributedGroup],
+        headlineComparison: emptyHeadline,
+        articles: [article("a1"), article("a2")],
+        hasFullAccess,
+        hasClaimComparison,
+      });
+      const json = JSON.stringify(view);
+      for (const sentinel of [
+        sentinelClaimIdA,
+        sentinelClaimIdB,
+        sentinelEntityId,
+        sentinelConfidence,
+      ]) {
+        expect(json).not.toContain(sentinel);
+      }
+    }
+  });
+});
+
 describe("empty state", () => {
   it("returns null headlineComparison when there are no headline entries", () => {
     const view = buildCoverageComparisonView({

@@ -219,3 +219,30 @@ describe("empty input", () => {
     expect(extractNumericalAssertions("   ")).toEqual([]);
   });
 });
+
+describe("negative values and numeric ranges never silently collapse to one false-precise value", () => {
+  // Found during the final adversarial merge-gate review: a "-" (or en/em
+  // dash) immediately adjacent to the matched digit run — either a
+  // hostile negative sign our unit rules don't support, or an ordinary
+  // written-out range like "10-12 people" — used to be silently dropped,
+  // presenting the second number of a range (or the unsigned magnitude of
+  // a negative value) as if it were the sole exact assertion the text
+  // made. Precision over recall requires refusing extraction instead.
+  it("refuses to extract a hostile leading minus sign", () => {
+    expect(extractNumericalAssertions("-5 people were injured.")).toEqual([]);
+  });
+
+  it("refuses to extract either end of a hyphenated numeric range", () => {
+    expect(extractNumericalAssertions("10-12 people were injured.")).toEqual([]);
+  });
+
+  it("refuses to extract either end of an en-dash numeric range", () => {
+    expect(extractNumericalAssertions("10–12 people were injured.")).toEqual([]);
+  });
+
+  it("still extracts normally when a hyphen precedes an unrelated word, not the digit itself", () => {
+    const claims = extractNumericalAssertions("A well-known 12 people attended the event.");
+    expect(claims).toHaveLength(1);
+    expect(claims[0]).toMatchObject({ unit: "PEOPLE", numericValue: 12 });
+  });
+});
