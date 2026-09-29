@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
 import { toPlainText } from "@/lib/security/sanitize";
 import { externalAssessmentSchema } from "@/lib/validation/sourceProfile";
+import { logAdminAction } from "@/lib/adminAudit";
 
 /**
  * Assessments are edited wholesale (PUT-like semantics via PATCH, matching
@@ -45,6 +46,12 @@ export async function PATCH(
     },
   });
 
+  await logAdminAction(prisma, {
+    action: "assessment.update",
+    targetType: "ExternalAssessment",
+    targetId: assessment.id,
+    summary: "updated external source assessment",
+  });
   return NextResponse.json({ assessment });
 }
 
@@ -64,5 +71,11 @@ export async function DELETE(
   }
 
   await prisma.externalAssessment.delete({ where: { id: assessmentId } });
+  await logAdminAction(prisma, {
+    action: "assessment.delete",
+    targetType: "ExternalAssessment",
+    targetId: assessmentId,
+    summary: "deleted external source assessment",
+  });
   return NextResponse.json({ ok: true });
 }

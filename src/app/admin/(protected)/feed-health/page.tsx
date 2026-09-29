@@ -2,6 +2,10 @@ import { prisma } from "@/lib/db";
 import { absoluteTime, relativeTime } from "@/lib/format";
 import { CheckCircle2, XCircle } from "lucide-react";
 
+// See src/app/admin/(protected)/sources/page.tsx's own comment on this
+// directive — every admin page reading live data needs it.
+export const dynamic = "force-dynamic";
+
 export default async function FeedHealthPage() {
   const sources = await prisma.source.findMany({
     orderBy: { name: "asc" },

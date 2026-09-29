@@ -5,6 +5,7 @@ import { ingestAllDueSources } from "@/lib/ingest/ingestAll";
 import { ingestSource } from "@/lib/ingest/ingestSource";
 import { clusterRecentArticles } from "@/lib/clustering/cluster";
 import { prisma } from "@/lib/db";
+import { logAdminAction } from "@/lib/adminAudit";
 
 const bodySchema = z.object({ sourceId: z.string().optional(), force: z.boolean().optional() });
 
@@ -28,10 +29,20 @@ export async function POST(req: Request) {
     if (!source) return NextResponse.json({ error: "Source not found" }, { status: 404 });
     const result = await ingestSource(source);
     await clusterRecentArticles();
+    await logAdminAction(prisma, {
+      action: "ingest.trigger",
+      targetType: "Source",
+      targetId: source.id,
+      summary: "triggered manual ingestion for one source",
+    });
     return NextResponse.json({ results: [result] });
   }
 
   const results = await ingestAllDueSources({ force: parsed.data.force ?? true });
   const clusterResult = await clusterRecentArticles();
+  await logAdminAction(prisma, {
+    action: "ingest.trigger",
+    summary: `triggered manual ingestion (${results.length} sources)`,
+  });
   return NextResponse.json({ results, clusterResult });
 }

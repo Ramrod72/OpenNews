@@ -875,3 +875,41 @@ model NotificationPreference {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
+
+// ---------------------------------------------------------------------------
+// Minimal administrative mutation audit log (Veriqen Phase 13B)
+//
+// The admin system has exactly one shared password and no per-admin
+// identity (see ARCHITECTURE.md's Phase 13 section) — this table does NOT
+// solve that; it only answers "an authenticated administrator performed
+// this mutation at this time," which is the smallest useful compensating
+// control available without building real multi-admin identity. No
+// adminId/session-identifier column exists because there is currently
+// nothing meaningful to put in one.
+// ---------------------------------------------------------------------------
+
+/// One row per successfully committed admin mutation (never a read-only
+/// page view, never an auth/CSRF/validation failure that never reached the
+/// mutation itself — see src/lib/adminAudit.ts, the only writer of this
+/// table). `summary` is ALWAYS a short, pre-built, call-site-authored
+/// string — never a serialized request body, error object, or any other
+/// value that could carry a secret, token, or raw user/publisher content;
+/// this is what makes the table itself safe to add a read-only admin view
+/// on top of. Retention is deliberately unmanaged in Phase 13B (no
+/// scheduler, no cap enforcement beyond the read view's own bounded
+/// query) — a real retention policy is deferred to a later phase, per
+/// ARCHITECTURE.md.
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  occurredAt DateTime @default(now())
+  /// Stable dotted action key, e.g. "source.create", "settings.update.ai".
+  action     String
+  /// e.g. "Source", "Category" — omitted for actions with no single target (e.g. a bulk ingestion trigger).
+  targetType String?
+  targetId   String?
+  /// Short, pre-redacted, human-readable description — see this model's own doc comment. Never a raw request body.
+  summary    String
+  success    Boolean  @default(true)
+
+  @@index([occurredAt])
+}
