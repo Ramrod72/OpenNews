@@ -1,5 +1,6 @@
 import { getCurrentUser } from "@/lib/auth/consumer/getCurrentUser";
 import { getPricingView } from "@/lib/pricing";
+import { getBillingConfig } from "@/lib/billing/config";
 import { PlanCard } from "@/components/pricing/PlanCard";
 import { FeatureComparisonTable } from "@/components/pricing/FeatureComparisonTable";
 
@@ -8,6 +9,7 @@ export const metadata = { title: "Pricing" };
 export default async function PricingPage() {
   const user = await getCurrentUser();
   const { plans, comparisonRows } = await getPricingView(user?.id ?? null);
+  const billingEnabled = getBillingConfig().enabled;
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -23,11 +25,18 @@ export default async function PricingPage() {
         className="mb-4 rounded-xl border border-border bg-surface-muted p-4 text-sm text-foreground-muted"
         role="note"
       >
-        Veriqen&apos;s subscription billing isn&apos;t enabled yet. Features tagged{" "}
-        <strong className="font-semibold text-foreground">Coming soon</strong> describe what each
-        plan will include — they&apos;re part of the real plan definition, not a promise we
-        can&apos;t back up, but they aren&apos;t live in the app yet. Everything else listed already
-        works today.
+        {billingEnabled ? (
+          <>
+            Basic and Pro are billed monthly through Stripe. You can cancel, switch plans, or update
+            your card anytime from your account page.
+          </>
+        ) : (
+          <>Veriqen&apos;s subscription billing isn&apos;t enabled on this deployment yet.</>
+        )}{" "}
+        Features tagged <strong className="font-semibold text-foreground">Coming soon</strong>{" "}
+        describe what each plan will include — they&apos;re part of the real plan definition, not a
+        promise we can&apos;t back up, but they aren&apos;t live in the app yet. Everything else
+        listed already works today.
       </div>
 
       <div className="grid gap-6 md:grid-cols-3">
@@ -49,9 +58,21 @@ export default async function PricingPage() {
       <div className="mt-10 rounded-xl border border-border p-5 text-sm text-foreground-muted">
         <h2 className="mb-2 font-semibold text-foreground">Billing</h2>
         <p>
-          Registering always creates a Free account — there&apos;s no checkout flow yet, and no
-          button on this page or your account page can change your plan or charge you anything.
-          We&apos;ll announce it here when paid plans are actually available to buy.
+          {billingEnabled ? (
+            <>
+              Registering always creates a Free account. Upgrading redirects you to Stripe&apos;s
+              secure checkout — Veriqen never sees or stores your card details. Clicking &quot;Back
+              to Veriqen&quot; or landing back on this site doesn&apos;t change your plan by itself;
+              your account only updates once Stripe confirms the subscription, which is usually
+              immediate.
+            </>
+          ) : (
+            <>
+              Registering always creates a Free account — there&apos;s no checkout flow on this
+              deployment yet, and no button on this page or your account page can change your plan
+              or charge you anything.
+            </>
+          )}
         </p>
       </div>
     </div>

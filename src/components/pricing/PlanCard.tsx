@@ -45,8 +45,8 @@ export function PlanCard({
           >
             {plan.priceCents === 0 ? "Sign up free" : "Create a free account"}
           </Link>
-        ) : plan.cta === "upgrade" ? (
-          <UpgradeButton planName={plan.name} variant="primary" />
+        ) : plan.cta === "upgrade" && (plan.slug === "basic" || plan.slug === "pro") ? (
+          <UpgradeButton planName={plan.name} planSlug={plan.slug} variant="primary" />
         ) : (
           <p className="text-xs text-foreground-muted">Included at your current tier</p>
         )}

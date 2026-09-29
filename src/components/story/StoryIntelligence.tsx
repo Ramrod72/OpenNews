@@ -126,7 +126,7 @@ export function StoryIntelligence({ intelligence }: { intelligence: StoryIntelli
             Basic and Pro members see the full reporting-source breakdown, article-by-article
             evidence, and original-reporting details for every story.
           </p>
-          <UpgradeButton planName="Basic" />
+          <UpgradeButton planName="Basic" planSlug="basic" />
         </div>
       )}
 
