@@ -150,6 +150,32 @@ story share links point at the right place. Without it, these fall back
 to `http://localhost:3000`, which is fine for local development but wrong
 for anything users will actually see — set it before going live.
 
+### Stripe billing (optional)
+
+Basic/Pro checkout, the Customer Portal, and subscription-status sync are
+all dormant until every one of `STRIPE_MODE`, `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `STRIPE_BASIC_PRICE_ID`, and `STRIPE_PRO_PRICE_ID`
+is set (and consistent — see `.env.example`); until then the app behaves
+exactly as it did before Phase 12B. To enable it:
+
+1. Create Basic ($4.99/mo) and Pro ($9.99/mo) recurring Prices in the
+   Stripe Dashboard (test mode first) and set their Price ids as
+   `STRIPE_BASIC_PRICE_ID`/`STRIPE_PRO_PRICE_ID`.
+2. Add a webhook endpoint in the Stripe Dashboard pointed at
+   `https://your-domain.example/api/billing/webhook`, subscribed to
+   `checkout.session.completed`, `customer.subscription.updated`, and
+   `customer.subscription.deleted` — set its signing secret as
+   `STRIPE_WEBHOOK_SECRET`.
+3. Set `STRIPE_MODE` and `STRIPE_SECRET_KEY` to match (both `test`, or
+   both `live`) — a mismatch disables billing entirely rather than
+   guessing (see ARCHITECTURE.md's Phase 12B section).
+4. Redeploy with these variables set (the same `.env`/secret-injection
+   mechanism already used for `SESSION_SECRET`).
+
+Stripe retries a failed webhook delivery on its own schedule, so a brief
+restart during deployment is self-healing — no special handling is needed
+around a rolling restart.
+
 ## Monitoring
 
 - `GET /api/health` — checks the database is reachable; used by the Docker

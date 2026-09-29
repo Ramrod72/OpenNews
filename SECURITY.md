@@ -61,6 +61,19 @@ What's in scope:
   reaching the model's payload or an application log; the AI provider
   network call becoming a new SSRF/denial-of-wallet surface; an AI
   section failure breaking any other part of the story page.
+- Stripe billing (Phase 12B): a forged, replayed, duplicate, or
+  out-of-order webhook mutating subscription state; a webhook event being
+  marked processed despite its own local synchronization failing;
+  price/plan/user/customer/subscription identity tampering from the
+  client; an open redirect via the checkout/portal return URLs; CSRF
+  against the checkout/portal endpoints; a second paid subscription being
+  created for an already-paid customer; entitlement logic failing open for
+  an unrecognized subscription status; the checkout success redirect
+  itself being trusted as proof of payment; test-mode and live-mode Stripe
+  configuration being silently cross-mapped; the Stripe secret key,
+  webhook signing secret, or a full webhook payload reaching a log line;
+  a Stripe outage taking down unrelated parts of the app because an
+  ordinary entitlement check depended on reaching Stripe synchronously.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -813,6 +826,108 @@ written by this feature (`"AQ"`), and the full Phase 7-10 regression
 suite (provenance, source-groups, claims, coverage comparison, story
 intelligence — 26 files, 375 tests) passes unchanged alongside Phase
 11B's own suite.
+
+**Stripe billing (Phase 12B).** The webhook endpoint is this feature's
+highest-risk trust boundary; the rest of the risks below cluster around
+identity/price tampering and fail-closed entitlement resolution.
+
+_Forged/replayed/duplicate/out-of-order webhooks._ Every webhook request
+is signature-verified (`BillingProvider.verifyWebhookEvent`) before a
+single payload field is trusted — an invalid or missing signature is
+rejected with no database work at all
+(`src/lib/billing/stripeProvider.test.ts`'s "J"/"K", real signature
+verification against a test-only secret, no network call). Duplicate or
+replayed delivery of the same event id is idempotent
+(`test/billingWebhookSync.integration.test.ts`'s "L"/"M", including a
+genuinely concurrent double-delivery race). Out-of-order delivery cannot
+regress state because every handler re-fetches the CURRENT subscription
+from Stripe rather than trusting the event's own embedded snapshot
+(`"N"`).
+
+_Event marked processed despite failed synchronization (Amendment C)._
+`ProcessedWebhookEvent` is written only inside the same
+`prisma.$transaction` as the `Subscription` write — a synchronization
+failure rolls back both, so the event is never falsely marked processed
+and Stripe's retry can fully reprocess it later, proven by directly
+injecting a transaction failure and confirming (a) no event/row was
+written, and (b) an identical subsequent call, against a healthy
+database, fully succeeds
+(`test/billingWebhookSync.integration.test.ts`'s "AW"/"AX"/"BG"/"BH").
+
+_Price/plan/user/customer/subscription identity tampering._ A client may
+supply only a closed plan-slug enum (`"basic"` | `"pro"`) to Checkout —
+never a price id, customer id, or subscription id
+(`src/lib/billing/planMapping.ts`'s `isPaidPlanSlug`, tested against
+type-confused and injection-shaped inputs). All other identity (which
+user, which Stripe customer, which subscription) is resolved
+server-side from the authenticated session or the verified webhook's own
+re-fetched Stripe object — there is no request field anywhere in
+`checkout.ts`/`portal.ts`/`webhookSync.ts` a caller could use to name a
+different identity (`test/billingRoutes.integration.test.ts`'s
+ownership tests, `test/billingWebhookSync.integration.test.ts`'s
+unknown-customer/unknown-price fail-closed tests).
+
+_Open redirect._ Checkout's `successUrl`/`cancelUrl` and the Portal's
+`returnUrl` are built exclusively from `getSiteUrl()` plus a literal,
+hardcoded path — there is no parameter in `createCheckoutForUser`'s or
+`createPortalForUser`'s own signature a caller could use to influence
+either, making this structurally impossible rather than merely validated.
+
+_CSRF._ Both mutating endpoints require the same `x-veriqen-account: 1`
+header convention every other consumer-account route already uses;
+missing it is rejected with 403 before authentication is even checked
+(`test/billingRoutes.integration.test.ts`).
+
+_Second paid subscription creation._ `createCheckoutForUser` rejects
+with `already_subscribed` whenever the caller's current subscription
+already grants paid access (per the same status matrix entitlements.ts
+uses) — Basic→Pro, Pro→Basic, and a `past_due`-but-still-paid user are
+all routed away from a second Checkout Session
+(`test/billingCheckout.integration.test.ts`'s "BB"/"BC"/"BD"). Known,
+accepted residual risk: two Checkout Sessions opened before either
+completes can both succeed, since Checkout intentionally does not lock
+against this (ARCHITECTURE.md's Known Limitations).
+
+_Entitlement fail-open for an unrecognized status._ `grantsPaidAccess()`
+is an ALLOW-list, not a deny-list — an unrecognized/future Stripe status
+string fails closed to "no paid access" by construction, proven directly
+(`test/entitlements.integration.test.ts`'s "AZ").
+
+_Checkout success redirect trusted as proof of payment._ Nothing in
+`createCheckoutForUser` or the account page's own rendering of
+`?checkout=success` ever mutates `Subscription` state — the message is
+purely informational; the only code path that ever writes
+`Subscription` state is the verified webhook sync
+(`test/billingCheckout.integration.test.ts`'s "H").
+
+_Test/live environment confusion (Amendment A)._ `getBillingConfig()`
+requires an explicit `STRIPE_MODE` and cross-checks it only against
+Stripe's own documented secret-key prefix convention — never against a
+Price id's or webhook secret's formatting, which Stripe documents no
+convention for at all. A mismatch disables billing entirely rather than
+guessing which mode was intended
+(`src/lib/billing/config.test.ts`'s "BF").
+
+_Secret/payload leakage in logs._ Every log line in the billing webhook
+path carries only a reason code, an event id, or a Stripe object id —
+proven directly by asserting the logged text never contains the
+configured secret key or webhook secret across a signature-failure path
+and a synchronization-failure path, including with a deliberately
+hostile payload embedding fake secrets and card numbers
+(`test/billingPrivacyAndIsolation.integration.test.ts`'s "AC/AD").
+
+_Stripe outage isolation._ `getPlan()` (`src/lib/entitlements.ts`) never
+calls Stripe — it only reads the local `Subscription` row a verified
+webhook already synchronized. Proven directly: an active Pro user's
+entitlements resolve correctly with no billing provider or config
+constructed anywhere in the test at all
+(`test/billingPrivacyAndIsolation.integration.test.ts`'s "BA").
+
+_Privacy._ Only an email and an opaque Veriqen user id ever reach the
+provider's `createCustomer`/Checkout-metadata calls — proven by asserting
+the exact key set on every such call, ruling out any accidental inclusion
+of saved-stories/topics/history data that has no field to travel through
+in the first place (`"AE"`).
 
 ## Dependency scanning
 
