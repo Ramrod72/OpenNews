@@ -48,13 +48,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const allUserIds = [freeUserId, basicUserId, proUserId, ...disposableUserIds];
-  await prisma.aiStoryBrief.deleteMany({ where: { storyCluster: { categoryId } } });
-  await prisma.storyCluster.deleteMany({ where: { categoryId } });
-  await prisma.usageRecord.deleteMany({ where: { userId: { in: allUserIds } } });
-  await prisma.subscription.deleteMany({ where: { userId: { in: allUserIds } } });
-  await prisma.user.deleteMany({ where: { id: { in: allUserIds } } });
-  await prisma.category.delete({ where: { id: categoryId } });
+  // Filtered defensively: if beforeAll itself failed partway (e.g. a slow
+  // CI runner exceeding the hook timeout), some of these may still be
+  // undefined — an unfiltered array would crash Prisma's own `in` filter
+  // (it rejects `undefined` array entries) and mask the real beforeAll
+  // failure behind a second, unrelated crash in this cleanup hook.
+  const allUserIds = [freeUserId, basicUserId, proUserId, ...disposableUserIds].filter(
+    (id): id is string => typeof id === "string",
+  );
+  if (categoryId) {
+    await prisma.aiStoryBrief.deleteMany({ where: { storyCluster: { categoryId } } });
+    await prisma.storyCluster.deleteMany({ where: { categoryId } });
+  }
+  if (allUserIds.length > 0) {
+    await prisma.usageRecord.deleteMany({ where: { userId: { in: allUserIds } } });
+    await prisma.subscription.deleteMany({ where: { userId: { in: allUserIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: allUserIds } } });
+  }
+  if (categoryId) await prisma.category.delete({ where: { id: categoryId } });
 });
 
 afterEach(async () => {
