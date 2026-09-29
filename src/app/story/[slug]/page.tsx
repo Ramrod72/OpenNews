@@ -15,12 +15,14 @@ import {
 } from "@/lib/perspective";
 import { loadStoryIntelligence, resolveStoryIntelligenceViewerId } from "@/lib/storyIntelligence";
 import { loadCoverageComparison } from "@/lib/coverageComparison";
+import { loadAiStoryBrief } from "@/lib/aiStoryBrief";
 import { BreakingBadge, CategoryBadge } from "@/components/ui/CategoryBadge";
 import { BookmarkButton } from "@/components/story/BookmarkButton";
 import { ShareButton } from "@/components/story/ShareButton";
 import { StoryCard } from "@/components/story/StoryCard";
 import { StoryIntelligence } from "@/components/story/StoryIntelligence";
 import { CoverageComparison } from "@/components/story/CoverageComparison";
+import { AiStoryBrief } from "@/components/story/AiStoryBrief";
 import { AdContainer } from "@/components/ads/AdContainer";
 
 export const revalidate = 60;
@@ -111,6 +113,17 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
     loadStoryIntelligence(cluster, viewerId),
     loadCoverageComparison(cluster, viewerId),
   ]);
+  // Depends on the two results above (its AI input is built exclusively
+  // from them — see src/lib/ai/storyBrief/input.ts) so it runs after,
+  // never in parallel with them. Isolated in its own try/catch inside
+  // loadAiStoryBrief; a failure here can never affect Story Intelligence
+  // or Coverage Comparison, which have already resolved by this point.
+  const aiStoryBrief = await loadAiStoryBrief(
+    cluster,
+    viewerId,
+    coverageComparison,
+    storyIntelligence,
+  );
   const timeline = [...cluster.articles].sort(
     (a, b) => a.publishedAt.getTime() - b.publishedAt.getTime(),
   );
@@ -225,6 +238,8 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
         <StoryIntelligence intelligence={storyIntelligence} />
 
         <CoverageComparison comparison={coverageComparison} />
+
+        <AiStoryBrief result={aiStoryBrief} />
 
         {byPerspective.size > 1 && (
           <section className="mt-10">

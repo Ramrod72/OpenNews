@@ -6,7 +6,7 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.ts", "worker/**/*.test.ts", "test/**/*.test.ts"],
     env: {
-      DATABASE_URL: `file:${path.resolve(__dirname, "test/.tmp-test.db")}`,
+      DATABASE_URL: `file:${path.resolve(__dirname, "test/.tmp-test.db")}?socket_timeout=30&connection_limit=1`,
     },
     globalSetup: ["./test/global-setup.ts"],
   },
