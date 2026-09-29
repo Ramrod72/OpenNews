@@ -39,6 +39,39 @@ export interface UsageCheck {
 
 const FREE_PLAN_SLUG = "free";
 
+/**
+ * Phase 12B's locked effective-plan policy (see ARCHITECTURE.md's Phase
+ * 12B section for the full rationale) — the ONLY place in the codebase
+ * that decides which Stripe-synchronized subscription statuses currently
+ * grant PAID entitlements. Everything else (checkout, portal, webhook
+ * sync) only ever writes `Subscription.status` verbatim from Stripe; this
+ * is the one function that reads it and decides what it means for access.
+ *
+ * Deliberately an ALLOW-list, not a deny-list: any status not explicitly
+ * listed here — including a genuinely unrecognized future Stripe status —
+ * fails closed to "does not grant paid access," never the other way
+ * around.
+ */
+const STATUSES_GRANTING_PAID_ACCESS = new Set(["active", "past_due"]);
+
+/**
+ * Trials are explicitly NOT enabled in Phase 12B (see the locked product
+ * decisions: "trialing → paid plan only if trials are ever deliberately
+ * enabled"). This is the one flag a future phase would flip — Checkout
+ * never configures a trial period in this phase, so a `trialing`
+ * subscription should not normally occur, but if one is ever created
+ * out-of-band (e.g. manually in the Stripe dashboard), this constant is
+ * what keeps it from silently granting access nobody decided to grant.
+ */
+const TRIALS_ENABLED = false;
+
+/** True if `status` (Stripe's own status string, or "active" for the un-migrated Free-only case) currently grants this subscription's plan's paid entitlements. */
+export function grantsPaidAccess(status: string): boolean {
+  if (STATUSES_GRANTING_PAID_ACCESS.has(status)) return true;
+  if (status === "trialing") return TRIALS_ENABLED;
+  return false;
+}
+
 type PlanWithEntitlements = Plan & { entitlements: Entitlement[] };
 
 function toResolvedPlan(plan: PlanWithEntitlements): ResolvedPlan {
@@ -64,19 +97,38 @@ async function loadFreePlan(): Promise<PlanWithEntitlements> {
 
 /**
  * Resolves the plan currently in effect for a user, or the Free plan for
- * an anonymous visitor (userId = null). If a user somehow has no active
- * subscription (shouldn't happen — registration always creates one), this
- * also falls back to Free rather than throwing, so a data inconsistency
- * degrades to the safe default instead of breaking the page.
+ * an anonymous visitor (userId = null). If a user somehow has no
+ * subscription row at all (shouldn't happen — registration always
+ * creates one), this also falls back to Free rather than throwing, so a
+ * data inconsistency degrades to the safe default instead of breaking
+ * the page.
+ *
+ * Deliberately does NOT filter the lookup by `status: "active"` the way
+ * this function used to (pre-Phase-12B) — that would incorrectly exclude
+ * a `past_due` row this policy says should still grant access. Instead,
+ * the row is read unconditionally and `grantsPaidAccess()` decides
+ * per-status whether its plan applies; a paid-plan row whose status
+ * doesn't currently grant access falls through to a genuinely separate
+ * Free-plan lookup below, exactly like a user who never subscribed at
+ * all. This function NEVER calls out to Stripe itself — it only ever
+ * reads the local row a verified webhook already synchronized (see
+ * src/lib/billing/webhookSync.ts) — so a Stripe outage has zero effect on
+ * every ordinary entitlement check across the app (ARCHITECTURE.md's
+ * Phase 12B section covers this failure-isolation guarantee in full).
  */
 export async function getPlan(userId: string | null): Promise<ResolvedPlan> {
   if (userId) {
     const subscription = await prisma.subscription.findFirst({
-      where: { userId, status: "active" },
+      where: { userId },
       orderBy: { createdAt: "desc" },
       include: { plan: { include: { entitlements: true } } },
     });
-    if (subscription) return toResolvedPlan(subscription.plan);
+    if (subscription) {
+      const isPaidPlan = subscription.plan.slug !== FREE_PLAN_SLUG;
+      if (!isPaidPlan || grantsPaidAccess(subscription.status)) {
+        return toResolvedPlan(subscription.plan);
+      }
+    }
   }
   return toResolvedPlan(await loadFreePlan());
 }

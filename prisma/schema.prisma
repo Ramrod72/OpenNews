@@ -364,30 +364,85 @@ model Entitlement {
 }
 
 /// A user's subscription to a plan over time. Every user — including
-/// free users — has a Subscription row (to plan "free") so "what plan is
-/// this user on" is always a single consistent lookup rather than a
-/// nullable special case. Billing fields are nullable/unset until Phase 12
-/// wires in a real payment provider.
+/// free users — has exactly ONE Subscription row (to plan "free" until
+/// they ever pay) so "what plan is this user on" is always a single
+/// consistent lookup rather than a nullable special case. Phase 12B
+/// preserves this invariant: a plan/billing change UPDATES this row in
+/// place — it never inserts a second row for the same user (see
+/// src/lib/billing/webhookSync.ts).
+///
+/// `status` holds Stripe's own subscription-status string verbatim once
+/// `billingProvider = "stripe"` ("active" | "past_due" | "unpaid" |
+/// "canceled" | "incomplete" | "incomplete_expired" | "trialing" |
+/// "paused") — never re-encoded into a separate Veriqen-specific enum.
+/// Which of these statuses currently grant PAID entitlements is decided
+/// in exactly one place (src/lib/entitlements.ts's `grantsPaidAccess`),
+/// not here and not by application code elsewhere — `planId` on this row
+/// simply records which plan the subscription is FOR (kept even after
+/// cancellation, as a historical record) while `status` is what gates
+/// access. A plan-mapped `Entitlement` for the free plan is unaffected by
+/// any of this, since the free plan needs no such gating in the first
+/// place.
 model Subscription {
   id                     String    @id @default(cuid())
   userId                 String
   user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   planId                 String
   plan                   Plan      @relation(fields: [planId], references: [id])
-  /// "active" | "canceled" | "past_due" | "trialing" | "incomplete" | "expired"
+  /// "active" | "canceled" | "past_due" | "unpaid" | "trialing" |
+  /// "incomplete" | "incomplete_expired" | "paused" (Stripe's own status
+  /// vocabulary, once billingProvider = "stripe") — see this model's own
+  /// doc comment above.
   status                 String    @default("active")
   /// e.g. "stripe"; null until a billing provider is configured (Phase 12).
   billingProvider        String?
   /// The billing-provider subscription object id (1:1 with this row,
-  /// unlike the customer id — see User.externalCustomerId).
-  externalSubscriptionId String?
+  /// unlike the customer id — see User.externalCustomerId). Unique so a
+  /// given Stripe subscription can never be mapped to two local rows.
+  externalSubscriptionId String?   @unique
+  /// The specific Stripe Price id currently active on this subscription —
+  /// recorded separately from `planId` (which is Veriqen's own resolved
+  /// plan) so support/ops can see exactly what Stripe considers active
+  /// without a second API call, and so a price unrecognized by the
+  /// trusted plan mapping is visibly distinguishable from one that is.
+  externalPriceId        String?
+  currentPeriodStart     DateTime?
   currentPeriodEnd       DateTime?
   cancelAtPeriodEnd      Boolean   @default(false)
+  /// When this row was last overwritten by a verified webhook sync — never
+  /// set by anything else. Absence (null) on a paid-looking row is itself
+  /// a signal worth surfacing to support: it means Stripe is the one
+  /// source that has never actually confirmed this row's state.
+  lastSyncedAt           DateTime?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
   @@index([userId])
   @@index([status])
+}
+
+/// Records that a given Stripe webhook event has been fully, successfully
+/// synchronized locally — the ONE mechanism that makes webhook processing
+/// idempotent against Stripe's at-least-once, possibly-out-of-order
+/// delivery. A row here is written ONLY inside the same database
+/// transaction as the Subscription write it corresponds to (see
+/// src/lib/billing/webhookSync.ts) — if that transaction rolls back for
+/// any reason, this row is never created either, so Stripe's retry of the
+/// same event is free to try the whole synchronization again from
+/// scratch. There is deliberately no relation to User/Subscription: the
+/// Stripe event id alone is sufficient for deduplication, and correlating
+/// an event to a user is only ever needed transiently during processing.
+model ProcessedWebhookEvent {
+  /// The Stripe event id itself (e.g. "evt_..."), not a generated cuid —
+  /// this is what makes a duplicate/replayed delivery of the exact same
+  /// event a guaranteed, trivial primary-key conflict rather than
+  /// something application code has to reason about.
+  id          String   @id
+  /// e.g. "customer.subscription.updated" — observability only, never
+  /// branched on by anything that needs to be a security boundary (that
+  /// branching happens once, before this row is ever written).
+  type        String
+  processedAt DateTime @default(now())
 }
 
 /// Tracks consumption of quota-limited features (e.g. Pro AI operations)
