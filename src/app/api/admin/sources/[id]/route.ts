@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
 import { toPlainText } from "@/lib/security/sanitize";
 import { httpUrl, SOURCE_TYPE_VALUES } from "@/lib/validation/sourceProfile";
+import { logAdminAction } from "@/lib/adminAudit";
 
 const PROFILE_FIELDS = [
   "description",
@@ -78,6 +79,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         ...(touchedProfileField && { profileUpdatedAt: new Date() }),
       },
     });
+    await logAdminAction(prisma, {
+      action: "source.update",
+      targetType: "Source",
+      targetId: source.id,
+      summary: "updated source",
+    });
     return NextResponse.json({ source });
   } catch {
     return NextResponse.json({ error: "Source not found" }, { status: 404 });
@@ -91,6 +98,12 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const { id } = await params;
   try {
     await prisma.source.delete({ where: { id } });
+    await logAdminAction(prisma, {
+      action: "source.delete",
+      targetType: "Source",
+      targetId: id,
+      summary: "deleted source and cascading associated content",
+    });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Source not found" }, { status: 404 });

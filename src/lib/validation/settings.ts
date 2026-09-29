@@ -33,6 +33,16 @@ export const aiSettingsSchema = z.object({
   provider: z.enum(["none", "ollama"]).default("none"),
   baseUrl: z.string().max(500).default("http://localhost:11434"),
   model: z.string().max(200).default("llama3.1"),
+  /**
+   * Phase 13B operational kill switch for AI Story Brief generation —
+   * additive and OPTIONAL so a pre-existing "ai" AdminSetting row written
+   * before this field existed remains perfectly valid (Object.assign-style
+   * partial merge in getAiConfig() simply falls through to the
+   * environment-derived default — see that function's own doc comment).
+   * Deliberately NOT storyBriefTimeoutMs — that field stays env-only per
+   * the Phase 13A audit's own scope decision.
+   */
+  storyBriefEnabled: z.boolean().optional(),
 });
 
 export type AiSettings = z.infer<typeof aiSettingsSchema>;

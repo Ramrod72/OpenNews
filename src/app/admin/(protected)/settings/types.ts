@@ -7,4 +7,6 @@ export interface AiConfig {
   provider: "none" | "ollama";
   baseUrl: string;
   model: string;
+  /** Phase 13B operational kill switch for AI Story Brief generation — deliberately the ONLY Story Brief field exposed here (never storyBriefTimeoutMs). */
+  storyBriefEnabled: boolean;
 }

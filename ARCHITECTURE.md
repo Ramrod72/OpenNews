@@ -1449,6 +1449,133 @@ Stripe.js/Elements integration exists in the browser at all (Checkout and
 the Customer Portal are both fully Stripe-hosted redirects), so no
 publishable key is needed anywhere in this phase.
 
+## Admin operations (Phase 13B)
+
+Phase 13A audited the existing admin system end-to-end (see that audit's
+own report, referenced from this repo's session history) and found: one
+shared admin password (no per-admin identity), no operational visibility
+into billing at all, no operational visibility into ingestion health, and
+an AI Story Brief kill switch that only existed as an environment
+variable. Phase 13B closes exactly those gaps — deliberately not a CMS
+redesign, not an analytics platform, not user management.
+
+**Admin identity remains the single shared password.** Phase 13B does not
+introduce `AdminUser` rows, multiple admin identities, or any path from a
+consumer account to admin access — see SECURITY.md's own updated threat
+model for why this remains the accepted approach for now.
+
+**Billing visibility** (`src/lib/billing/adminStatus.ts`,
+`getBillingAdminStatus()`) reuses Phase 12B's own `getRuntimeBilling()`/
+`getBillingConfig()` exactly as every billing route already does — no
+billing logic is duplicated, and no live Stripe call is ever made to
+render this. It reports: whether billing is configured, the declared mode
+(`test`/`live`), the same static (secret-free) diagnostic reason string
+already used internally when disabled, local subscription counts grouped
+by status, and a count of Stripe-backed subscriptions whose
+`lastSyncedAt` is still null (per that column's own doc comment in
+`schema.prisma`, the one unambiguous "never confirmed by Stripe" signal
+derivable from existing columns without inventing a new staleness
+threshold). This surface is read-only: there is no route or function
+anywhere in `adminStatus.ts` that writes a `Subscription` row, and an
+administrator cannot fabricate paid access, change plan/status, or touch
+`externalSubscriptionId` from anywhere in the admin panel — Stripe and the
+Customer Portal remain the only place billing state actually changes.
+`duplicate_subscription_conflict` (Phase 12B's webhook defense-in-depth)
+remains server-log-only in this release — see Known limitations.
+
+**Ingestion liveness** (`src/lib/ingest/adminLiveness.ts`,
+`getIngestionLivenessStatus()`) is derived ENTIRELY from existing columns
+(`Source.lastFetchedAt`/`fetchIntervalMinutes`, `FeedFetchLog`) — no new
+worker-heartbeat mechanism was added, because the worker
+(`worker/index.ts`) is a separate process with no shared state to expose
+one through, and the existing columns already prove everything this needs
+to prove. A source is "overdue" once unfetched for more than 2× its own
+interval (a grace period sized against the worker's default 5-minute tick
+cadence) or never fetched at all; only active sources are ever considered.
+The admin dashboard's copy deliberately says "sources overdue for
+scheduled fetch," never "worker offline" — this can prove the former, not
+the latter.
+
+**AI Story Brief kill switch.** `aiSettingsSchema`
+(`src/lib/validation/settings.ts`) gained one additive, optional field,
+`storyBriefEnabled`, alongside the pre-existing `provider`/`baseUrl`/
+`model`. A pre-Phase-13B `"ai"` `AdminSetting` row simply lacks the key,
+and `getAiConfig()`'s existing merge order
+(`{...DEFAULT_CONFIG, ...envDefaults(), ...parsed}`) falls through to the
+environment-derived default exactly as before — this is purely additive,
+never a breaking change to that row's shape. Toggling it takes effect on
+the very next request with no restart, because `getAiConfig()` already
+reads fresh from the database on every call. The kill switch is a genuine
+kill switch, not merely a generation pause: `generateAiStoryBrief`
+(`src/lib/ai/storyBrief/generate.ts`) checks `storyBriefEnabled` BEFORE
+its own cache lookup, so a previously-cached artifact is also hidden
+while disabled, not just blocked from being regenerated — re-enabling
+makes the same cached artifact visible again with no new provider call.
+`storyBriefTimeoutMs` remains environment-only in this release (Phase 13A's
+own scope decision) and is never sent to the client — the admin
+settings page explicitly picks only the four exposed fields rather than
+spreading the full server-side `AiConfig` object into its client props.
+The toggle changes nothing about `cross_source_synthesis` entitlement or
+`ai_monthly_quota` usage state, and nothing about the `AIProvider`
+abstraction itself.
+
+**Source-delete warning.** The existing hard-delete-with-cascade behavior
+(deleting a `Source` cascades to its `Article`s, which cascade further to
+`ArticleKeyword`/`ProvenanceObservation`/`Claim`) is UNCHANGED — Phase 13B
+only fixed the admin confirm-dialog's wording, which previously read
+"Remove this source and its association with existing articles?" (readable
+as "articles survive") when in fact they do not. No archive/soft-delete
+semantics were introduced.
+
+**Minimal admin audit log** (`AdminAuditLog`, `src/lib/adminAudit.ts`).
+One additive table, written ONLY by `logAdminAction()` from within a
+route's own successful-mutation path — never for a read-only page view,
+and never for a request that never reached the mutation (auth failure,
+CSRF failure, validation rejection). There is deliberately no
+admin-identity column: the shared-password model (above) means there is
+currently nothing meaningful to put in one — this table answers "an
+authenticated administrator performed this mutation at this time," not
+"which one." Every `summary` is a short, hand-written, pre-redacted string
+fixed at each call site — never a serialized request body, never an error
+object — which is what makes it safe to build a read-only view
+(`/admin/operations`'s bounded, newest-first, 50-row tail) directly on top
+of without a separate redaction pass. Logged actions: source
+create/update/delete, external-assessment create/update/delete, category
+update, ad/AI settings update, manual ingestion trigger.
+
+**Global admin-login rate limiting**
+(`src/lib/adminLoginRateLimit.ts`). The pre-existing per-IP limiter
+(10 attempts / 5 min / IP) is defeated entirely by an attacker who
+rotates or spoofs their source IP. A second, process-global budget (30
+attempts / 5 min, deliberately more generous so a legitimate admin's own
+typos are never at risk) now runs alongside it on every login attempt,
+regardless of source IP — closing that gap for a single running process.
+Like every other rate limiter in this app, it is in-memory and
+per-process: it resets on restart and is not shared across multiple app
+instances. See DEPLOYMENT.md for the reverse-proxy requirement this (and
+the pre-existing per-IP limiter) both still depend on.
+
+**Failure isolation.** `/admin` and `/admin/operations` fetch their
+optional sections (billing status, ingestion liveness, the audit-log
+tail) via `Promise.allSettled`, independently of the page's own required
+counts — a transient failure in one optional aggregate renders that one
+section as "temporarily unavailable" rather than failing the whole page.
+No public-facing route or module imports `adminAudit`/`adminStatus`/
+`adminLiveness` — the admin panel is purely a reader of existing tables,
+never a dependency the public site's own request path waits on.
+
+**A genuine defect found and fixed during this phase's adversarial
+review**: every page under `/admin/(protected)` — including ones
+untouched by this phase (`/admin/sources`, `/admin/feed-health`) — was
+being statically prerendered at build time by Next's default
+optimization, because auth is enforced by middleware rather than by a
+`cookies()`/`headers()` call inside the page itself, leaving nothing in
+the render path to force dynamic rendering. In a `next build && next
+start` deployment this would have frozen every admin page's data
+(including the new billing/ingestion visibility this phase exists to add)
+at build time. Fixed by adding `export const dynamic = "force-dynamic"`
+to every admin page that reads live data.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate
@@ -1471,20 +1598,46 @@ publishable key is needed anywhere in this phase.
   orphaned Stripe customer with no local record — an accepted, narrow MVP
   tradeoff (Phase 12A's own audit reasoning), not something Phase 12B
   guards against with a reconciliation job.
-- A user who completes TWO separate Checkout Sessions for the same plan
-  (e.g. two open tabs) would genuinely be charged twice by Stripe, even
-  though the local `Subscription` row only ever reflects whichever
-  subscription the most recent webhook re-fetch observed — Checkout
-  intentionally does not prevent a second concurrent session (Phase 12A's
-  own audit: "harmless either way" for the _local_ state, though not
-  costless to the customer's card). No stronger locking was added for
-  Phase 12B's MVP scope.
+- ~~A user who completes TWO separate Checkout Sessions for the same plan
+  would genuinely be charged twice~~ — closed by a pre-merge hardening
+  pass on Phase 12B (the `CheckoutIntent` table in
+  `src/lib/billing/checkoutIntent.ts`): a concurrency-safe reservation
+  gate gets exactly one caller to Stripe for a genuinely new attempt, and
+  a legitimate retry reuses the same attempt-scoped idempotency key. See
+  that module's own doc comment for the full design.
 - Account deletion doesn't exist anywhere in this app yet (Phase 12A's own
   audit confirmed this). Whenever it is built, it MUST cancel any active
   Stripe subscription as part of the same deletion flow — this is a locked
   precondition for that future feature, not something Phase 12B needed to
   solve since the feature it would apply to doesn't exist.
-- No admin UI surfaces billing state (plan, status, Stripe ids, last sync
-  time) — the underlying data is all there on `Subscription`/`User` for a
-  future admin view to read, per Phase 12A's own audit recommendation to
-  defer that UI to a later phase.
+- ~~No admin UI surfaces billing state~~ — Phase 13B's `/admin/operations`
+  page now shows configured/mode/reason, local subscription counts by
+  status, and a never-synced-by-Stripe count, all read-only (see the
+  Admin operations section below).
+- Admin identity is still one shared password with no per-admin
+  attribution (Phase 13A's own audit conclusion, deliberately not solved
+  in Phase 13B) — the new `AdminAuditLog` records THAT a mutation
+  happened, never WHO performed it, because there is currently no "who"
+  to record.
+- The new process-global admin-login rate limiter
+  (`src/lib/adminLoginRateLimit.ts`), like the pre-existing per-IP one, is
+  in-memory and per-process — it resets on restart and is not shared
+  across multiple app instances/replicas behind a load balancer. See
+  DEPLOYMENT.md for the reverse-proxy `X-Forwarded-For` requirement both
+  limiters depend on.
+- `duplicate_subscription_conflict` (Phase 12B's webhook-side defense
+  against an unexpected second Stripe subscription) remains server-log-only.
+  Phase 13B's `AdminAuditLog` records admin MUTATIONS, not Stripe webhook
+  events, and Phase 12B's own webhook semantics were deliberately left
+  untouched — persisted billing-incident tracking is a candidate for a
+  later phase if production experience justifies it.
+- `AdminSetting`'s `PUT /api/admin/settings` route fully replaces (never
+  merges) the stored `"ads"`/`"ai"` JSON value. The real admin UI always
+  submits the complete object it just read via `GET`, so this is never
+  triggered through the actual settings page — but a direct API call with
+  a partial `ai`/`ads` body would silently drop the other fields back to
+  their schema defaults. Pre-existing since before Phase 13B (not
+  introduced by the Story Brief kill switch); noted here because it now
+  sits directly next to that toggle.
+- `storyBriefTimeoutMs` remains environment-only; there is no admin UI to
+  change it in this release (Phase 13A's own scope decision).

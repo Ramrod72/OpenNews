@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
 import { toPlainText } from "@/lib/security/sanitize";
 import { externalAssessmentSchema } from "@/lib/validation/sourceProfile";
+import { logAdminAction } from "@/lib/adminAudit";
 
 /** Create a new external assessment for a source. Provider/rating/scale/notes are stored as plain text, never HTML. */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -34,5 +35,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     },
   });
 
+  await logAdminAction(prisma, {
+    action: "assessment.create",
+    targetType: "ExternalAssessment",
+    targetId: assessment.id,
+    summary: "created external source assessment",
+  });
   return NextResponse.json({ assessment }, { status: 201 });
 }

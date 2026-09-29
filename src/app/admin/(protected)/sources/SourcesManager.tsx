@@ -60,7 +60,14 @@ export function SourcesManager({
   }
 
   async function deleteSource(id: string) {
-    if (!confirm("Remove this source and its association with existing articles?")) return;
+    if (
+      !confirm(
+        "Permanently delete this source? This also permanently deletes ALL of its articles, " +
+          "and every keyword, provenance, and claim record derived from those articles. This " +
+          "cannot be undone.",
+      )
+    )
+      return;
     const res = await fetch(`/api/admin/sources/${id}`, {
       method: "DELETE",
       headers: { [CSRF_HEADER]: "1" },

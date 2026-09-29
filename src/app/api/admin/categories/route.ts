@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
+import { logAdminAction } from "@/lib/adminAudit";
 
 const updateSchema = z.object({
   id: z.string(),
@@ -31,6 +32,12 @@ export async function PATCH(req: Request) {
   const { id, ...data } = parsed.data;
   try {
     const category = await prisma.category.update({ where: { id }, data });
+    await logAdminAction(prisma, {
+      action: "category.update",
+      targetType: "Category",
+      targetId: category.id,
+      summary: "updated category",
+    });
     return NextResponse.json({ category });
   } catch {
     return NextResponse.json({ error: "Category not found" }, { status: 404 });

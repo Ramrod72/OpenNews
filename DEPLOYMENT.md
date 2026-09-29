@@ -100,7 +100,12 @@ Caddy handles Let's Encrypt certificates automatically. For Nginx, use
 `X-Forwarded-For` — the admin login rate limiter
 (`src/lib/rateLimit.ts`) and the general API rate limiter
 (`src/proxy.ts`) key off that header, so a reverse proxy that doesn't set it
-correctly weakens both.
+correctly weakens both. Phase 13B's additional process-global admin-login
+limiter (`src/lib/adminLoginRateLimit.ts`) doesn't key off any IP at all,
+so it isn't affected by this — but like every rate limiter in this app it
+is in-memory and per-process: behind a load balancer running multiple
+app instances/replicas, each instance enforces its own independent
+budget, not a shared one.
 
 ## Switching to PostgreSQL
 
@@ -182,5 +187,12 @@ around a rolling restart.
   healthcheck and suitable for an external uptime monitor.
 - **Admin → Feed health** — per-source fetch history and current failure
   streaks.
-- **Admin → Dashboard** — article/cluster counts and the 5 most recent
-  feed failures at a glance.
+- **Admin → Dashboard** — article/cluster counts, the 5 most recent feed
+  failures, and (Phase 13B) a compact ingestion-liveness and billing
+  status summary at a glance.
+- **Admin → Operations** (Phase 13B) — detailed read-only billing status
+  (configured/mode, local subscription counts by status, a
+  never-synced-by-Stripe count) and a bounded, newest-first tail of
+  recent administrative mutations. No billing mutation of any kind is
+  possible from this page or any admin route — Stripe and the Customer
+  Portal remain the only place billing state actually changes.

@@ -74,6 +74,19 @@ What's in scope:
   webhook signing secret, or a full webhook payload reaching a log line;
   a Stripe outage taking down unrelated parts of the app because an
   ordinary entitlement check depended on reaching Stripe synchronously.
+- Admin operational visibility (Phase 13B): a Stripe secret, webhook
+  secret, or any other environment secret being exposed through or
+  writable via the admin settings API; an arbitrary/unknown AdminSetting
+  key being smuggled in and persisted; stored XSS through a source name,
+  external assessment, or admin audit-log summary; the admin-login
+  brute-force limiter being fully bypassed by IP rotation; a raw request
+  body, session token, or CSRF value ever reaching the audit log; the
+  audit log being modifiable through any exposed API; an unbounded
+  audit-log or subscription-status query; one optional dashboard section
+  failing and breaking the rest of the admin panel, or breaking any
+  public-facing route; the AI Story Brief kill switch being bypassable
+  through some path other than `generateAiStoryBrief`'s own gate; the
+  source-delete confirmation understating what will actually be deleted.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -883,10 +896,14 @@ with `already_subscribed` whenever the caller's current subscription
 already grants paid access (per the same status matrix entitlements.ts
 uses) — Basic→Pro, Pro→Basic, and a `past_due`-but-still-paid user are
 all routed away from a second Checkout Session
-(`test/billingCheckout.integration.test.ts`'s "BB"/"BC"/"BD"). Known,
-accepted residual risk: two Checkout Sessions opened before either
-completes can both succeed, since Checkout intentionally does not lock
-against this (ARCHITECTURE.md's Known Limitations).
+(`test/billingCheckout.integration.test.ts`'s "BB"/"BC"/"BD"). A
+pre-merge hardening pass additionally closed the concurrent-Checkout
+race itself: `src/lib/billing/checkoutIntent.ts`'s `CheckoutIntent`
+reservation gate ensures at most one caller ever reaches Stripe for a
+genuinely new attempt, with a webhook-side defense
+(`duplicate_subscription_conflict`) as a second layer if an unexpected
+second subscription is ever observed anyway (see that module's own doc
+comment and `test/checkoutConcurrency.integration.test.ts`).
 
 _Entitlement fail-open for an unrecognized status._ `grantsPaidAccess()`
 is an ALLOW-list, not a deny-list — an unrecognized/future Stripe status
@@ -928,6 +945,118 @@ provider's `createCustomer`/Checkout-metadata calls — proven by asserting
 the exact key set on every such call, ruling out any accidental inclusion
 of saved-stories/topics/history data that has no field to travel through
 in the first place (`"AE"`).
+
+**Admin operational visibility (Phase 13B).** Phase 13A's own audit
+found the pre-existing admin system's authentication/CSRF/isolation
+model already sound (shared-password model aside — see
+ARCHITECTURE.md); this phase's own risk surface is narrower: exposing a
+secret through a new read-only view, and the new mutation-audit log
+itself becoming a leak vector.
+
+_Secret exposure through the settings API._ `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `SESSION_SECRET`, `ADMIN_PASSWORD_HASH`, and a
+placeholder future provider key were each injected into both the `"ai"`
+and `"ads"` request bodies sent to `PUT /api/admin/settings` — every one
+is silently stripped by zod's default unknown-key behavior before ever
+reaching the database, proven by reading the stored row back and
+asserting it never contains the injected value
+(`test/adminSettingsSecurity.test.ts`). The `GET` response was
+separately proven never to contain any of these values even when all
+five are genuinely set in the environment. Structurally, `aiSettingsSchema`
+(`src/lib/validation/settings.ts`) has no field for any secret at all —
+this isn't runtime validation catching an attempt, there is nothing to
+catch.
+
+_Arbitrary AdminSetting key injection._ The same tests confirm an unknown
+key (`arbitraryKey`, a placeholder secret name) is stripped by the schema
+rather than merged into the stored JSON — `AdminSetting` remains a
+closed, enumerated shape, never an open bag a caller can extend.
+
+_Stored XSS through admin-displayed content._ Source names, external
+assessment fields, and — new in this phase — audit-log summaries are all
+rendered through plain JSX interpolation; `SourcesManager.tsx`,
+`SourceProfileManager.tsx`, and the new `/admin/operations` audit tail
+were each confirmed to contain no `dangerouslySetInnerHTML` at all
+(`test/adminSettingsSecurity.test.ts`).
+
+_Audit-log injection / secret leakage into the log itself._ A fake
+Stripe-secret-shaped string, a fake session-token-shaped string, and a
+malicious `<script>` ad-snippet body were each injected as the actual
+field value in a real mutation request (a source name, an ad
+`headSnippet`); in every case the resulting `AdminAuditLog.summary` was
+proven to be the exact fixed, hand-written string the call site always
+uses — never containing the injected value at all
+(`test/adminAuditLog.integration.test.ts`'s items 47-50). This is a
+structural guarantee, not pattern-matching: `logAdminAction()`
+(`src/lib/adminAudit.ts`) is never given a raw request body or error
+object by any call site to begin with.
+
+_Audit log cannot be modified through any exposed API._ There is no
+route of any kind under `/api/admin/audit-log` — confirmed by asserting
+the directory doesn't exist. The table's only writer is
+`logAdminAction()`, itself only ever called from within another route's
+own successful-mutation path — never for a GET, an auth failure, a CSRF
+failure, or a validation rejection (`test/adminAuditLog.integration.test.ts`'s
+items 43-46).
+
+_Admin-login brute force with IP rotation._ Eleven login attempts across
+eleven distinct, never-reused `X-Forwarded-For` values were sent to the
+real login route; the 31st such attempt (crossing the new
+process-global 30-per-5-minute budget) was rejected with the identical
+generic 429 the pre-existing per-IP limiter already used, proving
+rotating IPs can no longer fully bypass throttling on one running
+process (`test/adminLoginHardening.integration.test.ts`'s item 6). The
+limiter change was verified to leave password-verification semantics
+untouched: a one-character-off password and a completely different
+password both still return the exact same generic 401 body (item 8).
+
+_Unbounded audit-log or subscription queries._ `getRecentAdminActions()`
+was flooded with 120 real rows in one test and still returned exactly
+the requested (capped) count, newest first, regardless of total table
+size. Subscription-status counts are computed via `groupBy`, never a
+`findMany` fetched only to be counted client-side — confirmed both
+functionally and structurally (`test/adminOperationsVisibility.integration.test.ts`).
+
+_One optional dashboard section failing must not break the rest._ A
+mocked rejection on the billing aggregate's own Prisma call was combined
+with a healthy ingestion-liveness call inside the exact
+`Promise.allSettled` pattern both admin pages use — the billing section
+rejects while ingestion still fulfills, proving one section's failure is
+isolated from the other (`test/adminOperationsVisibility.integration.test.ts`'s
+items 57-60). Separately confirmed: no public-facing module
+(`stories.ts`, `pricing.ts`, `ads.ts`, `entitlements.ts`) imports
+anything from the new admin modules at all.
+
+_AI Story Brief kill switch cannot be bypassed._ `generateAiStoryBrief`
+is the sole entry point the story page ever calls (`loadAiStoryBrief` in
+`src/lib/aiStoryBrief.ts` has no other path to the AI layer); with the
+switch off, a real (non-test-injected) call for an entitled Pro user
+returns `disabled` before ever reaching a cache lookup — proven with a
+matching cache row pre-seeded at the exact key a real generation would
+use, which is still not returned while disabled
+(`test/adminAiKillSwitch.integration.test.ts`'s item 31). The toggle was
+separately proven to change neither `cross_source_synthesis`
+entitlement nor `ai_monthly_quota` usage state.
+
+_Source-delete confirmation accuracy._ The confirm-dialog text was
+asserted to mention "permanently," "articles," and at least one of
+provenance/claim/keyword — and to no longer contain the old, understating
+"its association with existing articles" phrasing. A real delete through
+the actual route was separately confirmed to still cascade to a real
+`Article` row exactly as before this phase
+(`test/adminSourceDeleteSafety.test.ts`).
+
+_Concurrent settings mutation and audit-log flooding (adversarial
+review findings)._ Two genuinely concurrent `PUT /api/admin/settings`
+calls were confirmed to never crash or corrupt the stored value — one
+of the two writes wins cleanly, both are individually logged, and
+flooding the audit log with 120 rows from a single authenticated admin
+session was confirmed not to degrade the bounded read path in any way
+(`test/adminSettingsSecurity.test.ts`'s adversarial section). No genuine
+defect was found in either case; both are documented, not fixed, since
+"an authenticated admin can perform many legitimate-looking mutations
+quickly" is the same trust boundary `requireAdmin()` already assumes
+throughout this app, not a new risk this phase introduces.
 
 ## Dependency scanning
 

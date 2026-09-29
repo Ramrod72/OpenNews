@@ -16,6 +16,7 @@ export default function AdminProtectedLayout({ children }: { children: React.Rea
         <AdminNavLink href="/admin">Dashboard</AdminNavLink>
         <AdminNavLink href="/admin/sources">Sources</AdminNavLink>
         <AdminNavLink href="/admin/feed-health">Feed health</AdminNavLink>
+        <AdminNavLink href="/admin/operations">Operations</AdminNavLink>
         <AdminNavLink href="/admin/settings">Settings</AdminNavLink>
         <div className="mt-2 md:mt-4">
           <LogoutButton />

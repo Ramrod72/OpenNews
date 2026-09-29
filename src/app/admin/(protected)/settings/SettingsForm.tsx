@@ -148,7 +148,7 @@ export function SettingsForm({
         </label>
 
         {ai.provider === "ollama" && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="block text-sm">
               <span className="mb-1 block font-medium">Base URL</span>
               <input
@@ -167,6 +167,22 @@ export function SettingsForm({
             </label>
           </div>
         )}
+
+        <div className="rounded-lg border border-border p-3">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={ai.storyBriefEnabled}
+              onChange={(e) => setAi({ ...ai, storyBriefEnabled: e.target.checked })}
+            />
+            AI Story Brief — operational kill switch
+          </label>
+          <p className="mt-1 text-xs text-foreground-muted">
+            Turns AI Story Brief generation off immediately, without a redeploy. While off, no new
+            Story Brief is generated and any previously cached Story Brief is also not shown — this
+            is a full kill switch, not just a pause on new generation.
+          </p>
+        </div>
       </section>
 
       <div className="flex items-center gap-3">

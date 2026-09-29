@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth/guard";
 import { httpUrl } from "@/lib/validation/sourceProfile";
+import { logAdminAction } from "@/lib/adminAudit";
 
 // Both url and homepageUrl are rendered as real clickable links in the
 // admin sources list (the feed-URL external-link icon and the homepage
@@ -57,6 +58,12 @@ export async function POST(req: Request) {
         categorySlug: parsed.data.categorySlug,
         fetchIntervalMinutes: parsed.data.fetchIntervalMinutes ?? 30,
       },
+    });
+    await logAdminAction(prisma, {
+      action: "source.create",
+      targetType: "Source",
+      targetId: source.id,
+      summary: "created source",
     });
     return NextResponse.json({ source }, { status: 201 });
   } catch (err) {
