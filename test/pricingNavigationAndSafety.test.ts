@@ -46,8 +46,26 @@ describe("No upgrade control can mutate a user's plan", () => {
     expect(source).toMatch(/planId:\s*freePlan\.id/);
   });
 
-  it("the shared UpgradeButton never calls fetch() — it only ever displays an explanatory message", () => {
+  it("the shared UpgradeButton only ever calls the trusted checkout endpoint, with a closed plan slug prop — never an arbitrary URL, price id, or customer id", () => {
     const source = readFileSync(join(ROOT, "src/components/pricing/UpgradeButton.tsx"), "utf8");
-    expect(source).not.toMatch(/fetch\(/);
+    expect(source).toMatch(/fetch\(\s*"\/api\/billing\/checkout"/);
+    expect(source).not.toMatch(/priceId|customerId|price_/i);
+  });
+
+  it("ManageBillingButton only ever calls the trusted portal endpoint with no request body — the customer id can only come from the server-side session", () => {
+    const source = readFileSync(
+      join(ROOT, "src/components/pricing/ManageBillingButton.tsx"),
+      "utf8",
+    );
+    expect(source).toMatch(/fetch\(\s*"\/api\/billing\/portal"/);
+    expect(source).not.toMatch(/body:/);
+  });
+
+  it("no API route file itself contains raw Subscription-mutation logic — that logic lives only in src/lib/billing/*, keeping the HTTP layer thin and testable", () => {
+    const billingApiFiles = apiFiles.filter((f) => f.includes(`${ROOT}/src/app/api/billing`));
+    expect(billingApiFiles.length).toBeGreaterThan(0);
+    const mutators = /subscription\.(create|update|upsert|delete)/;
+    const offenders = billingApiFiles.filter((file) => mutators.test(readFileSync(file, "utf8")));
+    expect(offenders).toEqual([]);
   });
 });

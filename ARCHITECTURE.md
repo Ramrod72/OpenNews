@@ -1285,6 +1285,170 @@ immediately after "Common assertions across coverage" and before
 this generated?" disclosure. Free/Basic viewers see a teaser only — the
 full brief is never generated server-side merely to hide it client-side.
 
+## Stripe billing — Basic/Pro subscriptions (Phase 12B)
+
+Phase 12B connects real commercial billing to the Plan/Entitlement
+architecture Phase 2 already established, without turning Stripe into a
+second, independent source of truth for what a user can do. The locked
+architectural principle: **Stripe decides commercial subscription state;
+Veriqen's existing entitlement system decides product capabilities.**
+
+**Free-subscription invariant preserved exactly.** Every user — including
+Free — has always had exactly one `Subscription` row (`src/lib/auth/
+consumer/service.ts`'s `registerUser`). Phase 12B never changes that:
+every plan change (checkout completing, a Portal-driven switch,
+cancellation) **updates that same row in place** (`src/lib/billing/
+webhookSync.ts`) — it never inserts a second row for a user. This is why
+`Subscription.externalSubscriptionId` became `@unique`: a given Stripe
+subscription id can map to exactly one local row, by construction.
+
+**`BillingProvider` abstraction** (`src/lib/billing/provider.ts`) —
+directly analogous to Phase 11B's `AIProvider` boundary. Product code
+(checkout/portal/webhook routes, and `entitlements.ts`'s status check)
+never touches the Stripe SDK directly; `src/lib/billing/stripeProvider.ts`
+is the **only** file that imports `stripe`, and every test in the repo
+runs against `src/lib/billing/testing/mockProvider.ts` instead — no
+automated test requires a live Stripe account, a real card, the Stripe
+CLI, or internet access.
+
+**Trusted Price mapping, fail-closed on the unknown.**
+`src/lib/billing/planMapping.ts` is the only place a Stripe Price id maps
+to a Veriqen plan slug, built from `src/lib/billing/config.ts`'s
+env-sourced `STRIPE_BASIC_PRICE_ID`/`STRIPE_PRO_PRICE_ID`. A client may
+request only `"basic"` or `"pro"` (a closed enum,
+`isPaidPlanSlug()`) — never a price id, customer id, or subscription id.
+A webhook whose subscription references a Price id outside this map is
+never guessed into a plan; the sync is skipped entirely for that event
+(logged, and still marked processed so Stripe stops retrying an event no
+retry could ever resolve — see `webhookSync.ts`'s own `unknown_price`
+outcome).
+
+**Test/live isolation (Amendment A).** `config.ts` never infers Stripe's
+mode from a Price id's or webhook secret's own formatting — Stripe
+documents no such convention for either. Instead, `STRIPE_MODE`
+(`"test"` | `"live"`) is an explicit, required setting, cross-checked
+only against the ONE property Stripe's own API documentation guarantees:
+a secret/restricted key's `sk_test_`/`rk_test_` vs. `sk_live_`/`rk_live_`
+prefix. Any mismatch, or any required variable being unset, disables
+billing entirely (`{enabled: false}`) rather than falling back to a
+default mode or guessing — proven by `src/lib/billing/config.test.ts`'s
+own "cannot silently fall back" tests.
+
+**Checkout — first purchase only.** `POST /api/billing/checkout`
+(session-authenticated, CSRF-protected like every other consumer-account
+route) validates the plan slug, resolves the trusted Price id server-side,
+reuses (or creates and persists) the user's Stripe customer id, and
+creates a Checkout Session with server-controlled, fixed-path
+success/cancel URLs (`src/lib/siteUrl.ts`'s `getSiteUrl()` plus a literal
+path — no client input reaches the redirect target at all, which is what
+makes an open redirect structurally impossible here rather than merely
+validated against). **An already-paid user is never routed through
+Checkout again** — `createCheckoutForUser` rejects with
+`already_subscribed` if the caller's current subscription already grants
+paid access, directing them to the Customer Portal instead (see below).
+The success redirect itself grants nothing: the account page's "processing
+your upgrade" message is purely informational, never a trust signal — the
+only thing that ever changes `Subscription` state is a verified webhook.
+
+**Customer Portal handles everything else.** Card updates, cancellation,
+reactivation, invoices, billing history, and **paid-plan switching**
+(Basic↔Pro) are all delegated to Stripe's hosted Customer Portal
+(`POST /api/billing/portal`) — Veriqen builds none of these itself. The
+customer id passed to Stripe comes only from the authenticated caller's
+own `User.externalCustomerId` row; there is no parameter anywhere in this
+path a request could use to name a different customer.
+
+**Webhook — the highest-risk trust boundary.** `POST /api/billing/webhook`
+reads the raw request body with a bounded reader (mirroring Phase 11B's
+`readBodyWithLimit` precedent — a body over ~64KB is rejected before any
+signature check) and verifies Stripe's signature
+(`BillingProvider.verifyWebhookEvent`) before trusting a single field of
+the payload. The minimum sufficient event set, after reassessing per
+Phase 12A's Amendment B, is exactly three: `checkout.session.completed`,
+`customer.subscription.updated`, `customer.subscription.deleted` — see
+`src/lib/billing/webhookSync.ts`'s own doc comment for why
+`customer.subscription.created` (redundant with the checkout-completion
+handler's own re-fetch) and `invoice.payment_failed` (Stripe already
+reflects a failed renewal via the subscription's own `status` transition
+to `past_due`/`unpaid`, which `customer.subscription.updated` already
+carries — a dedicated invoice handler would only duplicate that signal,
+and per Amendment B must never independently invent or override
+subscription status) are both deliberately omitted.
+
+**Never trust the embedded event payload as current state.** For every
+handled event, the handler re-fetches the CURRENT subscription object
+from Stripe (`BillingProvider.getSubscription`) rather than trusting the
+webhook's own possibly-stale/out-of-order snapshot — a duplicate or
+out-of-order delivery simply re-derives and re-applies whatever Stripe
+says is true right now, which is always a safe no-op or a correct
+overwrite, never a regression to older state.
+
+**Webhook idempotency is atomic (Amendment C).** `ProcessedWebhookEvent`
+(keyed by Stripe's own event id) is written **only inside the same
+`prisma.$transaction`** as the `Subscription` row it corresponds to. If
+synchronization fails for any reason, neither write commits — the event
+is never marked processed, so Stripe's own retry re-invokes the handler
+for the same event from scratch (safe: `getSubscription` is a pure read).
+A concurrent duplicate delivery resolves the same way: whichever
+transaction commits first wins, and the loser's failed unique-constraint
+insert on `ProcessedWebhookEvent.id` is caught and treated as an ordinary
+duplicate, never a partial application.
+
+**Status → effective-plan matrix (`src/lib/entitlements.ts`'s
+`grantsPaidAccess`)** — the ONE place in the codebase that decides which
+Stripe-synchronized statuses currently grant paid entitlements. Everything
+else, from the webhook sync to the UI, only ever reads or writes
+`Subscription.status` as Stripe's own raw string — never re-encoding it.
+Deliberately an ALLOW-list, never a deny-list, so an unrecognized future
+Stripe status fails closed:
+
+| Status                                                                  | Grants paid access?                                                                      |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `active`                                                                | Yes                                                                                      |
+| `past_due`                                                              | Yes (Stripe's own dunning/retry window — see the account page's payment-problem banner)  |
+| `trialing`                                                              | Only if a future phase deliberately enables trials (`TRIALS_ENABLED`, currently `false`) |
+| `unpaid`, `canceled`, `incomplete`, `incomplete_expired`, `paused`      | No                                                                                       |
+| Anything else (including a genuinely unrecognized future Stripe status) | No — fails closed                                                                        |
+| No Subscription row found at all                                        | No — falls back to Free (shouldn't happen; the invariant guarantees a row)               |
+
+A `cancel_at_period_end` subscription whose `status` is still `active`
+continues to grant access — Stripe itself only transitions `status` away
+from `active` once the paid period genuinely ends, so this matrix needs
+no special case for it.
+
+**`getPlan()` never calls Stripe.** It only ever reads the local
+`Subscription` row a verified webhook already synchronized — this is the
+entire basis for Phase 12B's failure-isolation guarantee: a total Stripe
+outage has zero effect on the public feed, story pages, search,
+provenance, coverage comparison, Story Intelligence, or an
+already-entitled Pro user's AI Story Brief access, since none of those
+depend on Stripe being reachable at all.
+
+**Minimum additive schema** (`prisma/migrations/20260929020000_
+phase12b_stripe_billing/`): `Subscription.currentPeriodStart`,
+`externalPriceId`, `lastSyncedAt` (all nullable), `externalSubscriptionId`
+becoming `@unique`, and one new table, `ProcessedWebhookEvent`. No
+changes to `User`, `Plan`, `Entitlement`, or `UsageRecord` — verified via
+a populated migration smoke test (pre-Phase-12B data across every model,
+including a pre-existing Pro `Subscription` row with the new columns
+absent, survives the migration byte-for-byte, and the new columns/table
+work correctly afterward).
+
+**Privacy.** The only data Stripe ever receives is the user's email (for
+receipts) and an opaque Veriqen user id as `metadata.veriqenUserId` — never
+saved stories, browsing history, followed topics, source preferences,
+article history, AI prompts/outputs, or provenance data. Server logs
+carry only reason codes, event ids, and Stripe object ids — never the
+secret key, the webhook signing secret, or a full webhook payload (see
+SECURITY.md's own dedicated section for the adversarial proof).
+
+**Secrets** (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) are
+environment-variables-only, exactly like `SESSION_SECRET`/
+`ADMIN_PASSWORD_HASH` — never `AdminSetting`, never `NEXT_PUBLIC_*`. No
+Stripe.js/Elements integration exists in the browser at all (Checkout and
+the Customer Portal are both fully Stripe-hosted redirects), so no
+publishable key is needed anywhere in this phase.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate
@@ -1298,10 +1462,29 @@ full brief is never generated server-side merely to hide it client-side.
   local-only (`localStorage`); the schema (`SavedStory`, `UserTopic`,
   `NotificationPreference`) supports migrating it to the account system,
   but the UI hasn't been wired up to do so yet.
-- There's no billing integration yet — the account page's "upgrade" action
-  is a placeholder that says billing isn't configured, not a Stripe (or
-  similar) checkout flow.
 - Expired/revoked `AuthSession` rows aren't pruned by anything — they're
   already inert (`resolveSessionUser` rejects them), just not deleted, so
   the table grows unboundedly. A periodic cleanup (cron or a check on
   write) is a natural addition once session volume makes it worth it.
+- A crash between Stripe successfully creating a customer and Veriqen
+  persisting that customer id to `User.externalCustomerId` leaves a rare
+  orphaned Stripe customer with no local record — an accepted, narrow MVP
+  tradeoff (Phase 12A's own audit reasoning), not something Phase 12B
+  guards against with a reconciliation job.
+- A user who completes TWO separate Checkout Sessions for the same plan
+  (e.g. two open tabs) would genuinely be charged twice by Stripe, even
+  though the local `Subscription` row only ever reflects whichever
+  subscription the most recent webhook re-fetch observed — Checkout
+  intentionally does not prevent a second concurrent session (Phase 12A's
+  own audit: "harmless either way" for the _local_ state, though not
+  costless to the customer's card). No stronger locking was added for
+  Phase 12B's MVP scope.
+- Account deletion doesn't exist anywhere in this app yet (Phase 12A's own
+  audit confirmed this). Whenever it is built, it MUST cancel any active
+  Stripe subscription as part of the same deletion flow — this is a locked
+  precondition for that future feature, not something Phase 12B needed to
+  solve since the feature it would apply to doesn't exist.
+- No admin UI surfaces billing state (plan, status, Stripe ids, last sync
+  time) — the underlying data is all there on `Subscription`/`User` for a
+  future admin view to read, per Phase 12A's own audit recommendation to
+  defer that UI to a later phase.

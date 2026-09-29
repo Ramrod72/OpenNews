@@ -59,7 +59,7 @@ function AiStoryBriefBody({ result }: { result: AiStoryBriefResult }) {
             Pro members get an AI-generated synthesis of this story&apos;s coverage — common
             assertions, differences, and source-overlap patterns Veriqen has already detected.
           </p>
-          <UpgradeButton planName="Pro" />
+          <UpgradeButton planName="Pro" planSlug="pro" />
         </div>
       );
     case "insufficient_data":

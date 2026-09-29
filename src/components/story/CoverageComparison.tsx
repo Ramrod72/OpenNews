@@ -153,7 +153,7 @@ export function CoverageComparison({ comparison }: { comparison: CoverageCompari
             Basic and Pro members see the full coverage comparison, including every shared
             assertion, headline differences across all articles, and reporting-source context.
           </p>
-          <UpgradeButton planName="Basic" />
+          <UpgradeButton planName="Basic" planSlug="basic" />
         </div>
       )}
 

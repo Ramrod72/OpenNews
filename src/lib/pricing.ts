@@ -93,6 +93,43 @@ export async function getPricingView(userId: string | null): Promise<PricingView
   };
 }
 
+/**
+ * Raw billing state for the account page — deliberately read directly
+ * from the Subscription/User rows rather than through getPlan(), which
+ * only ever answers "what plan applies right now" and would silently
+ * discard exactly the states this view needs to SHOW (e.g. a canceled
+ * subscription's own past plan/period, or a past_due status the account
+ * page displays as a payment-problem banner even though — per policy —
+ * it currently still grants access). Never calls Stripe directly; this
+ * is purely a read of whatever a verified webhook already synchronized
+ * (see src/lib/billing/webhookSync.ts).
+ */
+export interface BillingStatusView {
+  /** True once the user has ever completed Checkout (a Stripe customer id is on file), regardless of current status. */
+  hasBillingAccount: boolean;
+  /** Stripe's own status string (or "active" for a never-paid Free row), null only if the user somehow has no Subscription row at all. */
+  status: string | null;
+  isPastDue: boolean;
+  isCanceled: boolean;
+  cancelAtPeriodEnd: boolean;
+  currentPeriodEnd: Date | null;
+}
+
+async function getBillingStatus(userId: string): Promise<BillingStatusView> {
+  const [user, subscription] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.subscription.findFirst({ where: { userId }, orderBy: { createdAt: "desc" } }),
+  ]);
+  return {
+    hasBillingAccount: Boolean(user?.externalCustomerId),
+    status: subscription?.status ?? null,
+    isPastDue: subscription?.status === "past_due",
+    isCanceled: subscription?.status === "canceled",
+    cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd ?? false,
+    currentPeriodEnd: subscription?.currentPeriodEnd ?? null,
+  };
+}
+
 export interface AccountPlanSummary {
   slug: string;
   name: string;
@@ -103,11 +140,16 @@ export interface AccountPlanSummary {
   /** Only meaningful for a plan with a non-zero, non-unlimited AI quota (currently Pro). */
   aiUsage: UsageCheck | null;
   otherPlans: PricingPlanView[];
+  billing: BillingStatusView;
 }
 
 /** The account page's plan section: the user's current plan plus their upgrade options. */
 export async function getAccountPlanSummary(userId: string): Promise<AccountPlanSummary> {
-  const [plans, currentPlan] = await Promise.all([loadActivePlans(), getPlan(userId)]);
+  const [plans, currentPlan, billing] = await Promise.all([
+    loadActivePlans(),
+    getPlan(userId),
+    getBillingStatus(userId),
+  ]);
   const entitlementMaps = plans.map(toEntitlementsMap);
 
   const planViews: PricingPlanView[] = plans.map((plan, index) => {
@@ -147,6 +189,7 @@ export async function getAccountPlanSummary(userId: string): Promise<AccountPlan
     highlights: current.highlights,
     aiUsage: hasAiQuota ? await checkUsage(userId, "ai_monthly_quota") : null,
     otherPlans: planViews.filter((p) => !p.isCurrent),
+    billing,
   };
 }
 
