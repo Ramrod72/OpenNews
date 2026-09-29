@@ -1,7 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
 import { seedPlans } from "../prisma/seedPlans";
-import { can, checkUsage, getLimit, getPlan, recordUsage } from "@/lib/entitlements";
+import {
+  can,
+  checkUsage,
+  getLimit,
+  getPlan,
+  grantsPaidAccess,
+  recordUsage,
+} from "@/lib/entitlements";
 
 let freeUserId: string;
 let basicUserId: string;
@@ -141,5 +148,111 @@ describe("checkUsage", () => {
   it("anonymous visitors report their plan's limit without a usage lookup", async () => {
     const result = await checkUsage(null, "ai_monthly_quota");
     expect(result).toEqual({ allowed: false, used: 0, limit: 0 });
+  });
+});
+
+describe("grantsPaidAccess (Phase 12B locked status matrix)", () => {
+  it("active and past_due grant paid access", () => {
+    expect(grantsPaidAccess("active")).toBe(true);
+    expect(grantsPaidAccess("past_due")).toBe(true);
+  });
+
+  it("unpaid, canceled, incomplete, incomplete_expired, and paused do NOT grant paid access", () => {
+    expect(grantsPaidAccess("unpaid")).toBe(false);
+    expect(grantsPaidAccess("canceled")).toBe(false);
+    expect(grantsPaidAccess("incomplete")).toBe(false);
+    expect(grantsPaidAccess("incomplete_expired")).toBe(false);
+    expect(grantsPaidAccess("paused")).toBe(false);
+  });
+
+  it("trialing does not grant paid access — trials are not deliberately enabled in Phase 12B", () => {
+    expect(grantsPaidAccess("trialing")).toBe(false);
+  });
+
+  it("AZ: an unrecognized/future Stripe status fails closed", () => {
+    expect(grantsPaidAccess("some_future_status_stripe_invents_later")).toBe(false);
+    expect(grantsPaidAccess("")).toBe(false);
+  });
+});
+
+describe("getPlan (Phase 12B status-gated resolution)", () => {
+  async function makeUserOnPlan(planSlug: string, status: string): Promise<string> {
+    const plan = await prisma.plan.findUniqueOrThrow({ where: { slug: planSlug } });
+    const user = await prisma.user.create({
+      data: { email: `status-${planSlug}-${status}-${Date.now()}@example.com`, passwordHash: "x" },
+    });
+    await prisma.subscription.create({ data: { userId: user.id, planId: plan.id, status } });
+    return user.id;
+  }
+  const disposableIds: string[] = [];
+  afterAll(async () => {
+    await prisma.subscription.deleteMany({ where: { userId: { in: disposableIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: disposableIds } } });
+  });
+
+  it("Q: an active Pro subscription grants Pro", async () => {
+    const userId = await makeUserOnPlan("pro", "active");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("pro");
+  });
+
+  it("R: an active Basic subscription grants Basic", async () => {
+    const userId = await makeUserOnPlan("basic", "active");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("basic");
+  });
+
+  it("U: a past_due Pro subscription RETAINS Pro access (locked decision #5)", async () => {
+    const userId = await makeUserOnPlan("pro", "past_due");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("pro");
+  });
+
+  it("V: an unpaid Pro subscription falls back to Free (locked decision #7)", async () => {
+    const userId = await makeUserOnPlan("pro", "unpaid");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("free");
+  });
+
+  it("S: a canceled Pro subscription falls back to Free (locked decision #8)", async () => {
+    const userId = await makeUserOnPlan("pro", "canceled");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("free");
+  });
+
+  it("W: an incomplete Pro subscription falls back to Free", async () => {
+    const userId = await makeUserOnPlan("pro", "incomplete");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("free");
+  });
+
+  it("X: an incomplete_expired Pro subscription falls back to Free", async () => {
+    const userId = await makeUserOnPlan("pro", "incomplete_expired");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("free");
+  });
+
+  it("AZ: an unrecognized future status falls back to Free rather than granting access", async () => {
+    const userId = await makeUserOnPlan("pro", "some_future_status");
+    disposableIds.push(userId);
+    expect((await getPlan(userId)).slug).toBe("free");
+  });
+
+  it("T: cancel_at_period_end + status still active retains paid access (locked decision #9)", async () => {
+    const plan = await prisma.plan.findUniqueOrThrow({ where: { slug: "pro" } });
+    const user = await prisma.user.create({
+      data: { email: `status-cancel-scheduled-${Date.now()}@example.com`, passwordHash: "x" },
+    });
+    disposableIds.push(user.id);
+    await prisma.subscription.create({
+      data: {
+        userId: user.id,
+        planId: plan.id,
+        status: "active",
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    });
+    expect((await getPlan(user.id)).slug).toBe("pro");
   });
 });
