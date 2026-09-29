@@ -87,47 +87,69 @@ describe("writer helper itself", () => {
     await prisma.adminAuditLog.deleteMany({});
   });
 
+  // AdminAuditLog has no per-test scoping key (no FK to a disposable
+  // category/user), and this table is shared across the ENTIRE test
+  // suite's one physical SQLite file — other test files (including
+  // other Phase 13B files run earlier in the same CI process) legitimately
+  // leave rows behind. Every assertion below therefore filters by a
+  // unique-per-test marker rather than assuming the table is empty or
+  // that "the first/newest row" is necessarily this test's own row.
   it("writes a row with the given action/target/summary and success=true by default", async () => {
+    const marker = `writer-helper-${Date.now()}-${Math.random()}`;
     await logAdminAction(prisma, {
       action: "source.create",
       targetType: "Source",
       targetId: "abc",
-      summary: "created source",
+      summary: marker,
     });
-    const rows = await prisma.adminAuditLog.findMany();
+    const rows = await prisma.adminAuditLog.findMany({ where: { summary: marker } });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       action: "source.create",
       targetType: "Source",
       targetId: "abc",
-      summary: "created source",
+      summary: marker,
       success: true,
     });
   });
 
   it("defensively truncates an over-long summary rather than storing it unbounded", async () => {
-    await logAdminAction(prisma, { action: "source.create", summary: "x".repeat(10_000) });
-    const row = await prisma.adminAuditLog.findFirstOrThrow();
+    const marker = `truncate-marker-${Date.now()}-${Math.random()}`;
+    await logAdminAction(prisma, {
+      action: "source.create",
+      summary: marker + "x".repeat(10_000),
+    });
+    const row = await prisma.adminAuditLog.findFirstOrThrow({
+      where: { summary: { startsWith: marker } },
+    });
     expect(row.summary.length).toBeLessThanOrEqual(300);
   });
 
   it("getRecentAdminActions returns newest first and respects a bounded limit", async () => {
+    const prefix = `order-test-${Date.now()}-${Math.random()}-`;
     for (let i = 0; i < 5; i++) {
-      await logAdminAction(prisma, { action: "source.create", summary: `event ${i}` });
+      await logAdminAction(prisma, { action: "source.create", summary: `${prefix}${i}` });
     }
-    const rows = await getRecentAdminActions(prisma, 3);
-    expect(rows).toHaveLength(3);
-    expect(rows[0]!.summary).toBe("event 4");
-    expect(rows[1]!.summary).toBe("event 3");
+    // getRecentAdminActions has no filter of its own (it's a global
+    // newest-first tail by design), so pull a generous window and then
+    // check ordering/adjacency among OUR OWN marked rows within it,
+    // rather than assuming our 5 rows are the only rows in the table.
+    const rows = await getRecentAdminActions(prisma, 100);
+    const ours = rows.filter((r) => r.summary.startsWith(prefix));
+    expect(ours).toHaveLength(5);
+    expect(ours[0]!.summary).toBe(`${prefix}4`); // newest first
+    expect(ours[4]!.summary).toBe(`${prefix}0`); // oldest last
   });
 
   it("51/52: a limit far above the hard cap is itself capped, newest first", async () => {
+    const prefix = `capped-test-${Date.now()}-${Math.random()}-`;
     for (let i = 0; i < 5; i++) {
-      await logAdminAction(prisma, { action: "source.create", summary: `capped ${i}` });
+      await logAdminAction(prisma, { action: "source.create", summary: `${prefix}${i}` });
     }
     const rows = await getRecentAdminActions(prisma, 10_000);
     expect(rows.length).toBeLessThanOrEqual(100); // the function's own internal hard cap
-    expect(rows[0]!.summary).toBe("capped 4");
+    const ours = rows.filter((r) => r.summary.startsWith(prefix));
+    expect(ours[0]!.summary).toBe(`${prefix}4`); // newest of our own rows first
   });
 });
 

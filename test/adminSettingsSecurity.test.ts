@@ -192,12 +192,18 @@ describe("adversarial: audit-log flooding by an authenticated admin never breaks
   it("getRecentAdminActions stays fast and correctly bounded regardless of how many rows exist", async () => {
     await signInAsAdmin();
     const { logAdminAction, getRecentAdminActions } = await import("@/lib/adminAudit");
+    // Unique per-test prefix: this table is shared across the whole
+    // suite's one physical SQLite file, so a bare "flood-N" marker could
+    // collide with rows another concurrently-running test file left
+    // behind — see adminAuditLog.integration.test.ts's own note on this.
+    const prefix = `flood-${Date.now()}-${Math.random()}-`;
     for (let i = 0; i < 120; i++) {
-      await logAdminAction(prisma, { action: "source.create", summary: `flood-${i}` });
+      await logAdminAction(prisma, { action: "source.create", summary: `${prefix}${i}` });
     }
     const rows = await getRecentAdminActions(prisma, 50);
-    expect(rows).toHaveLength(50);
-    expect(rows[0]!.summary).toBe("flood-119"); // newest first, unaffected by total row count
-    await prisma.adminAuditLog.deleteMany({ where: { summary: { startsWith: "flood-" } } });
+    expect(rows).toHaveLength(50); // the requested cap is honored regardless of total table size
+    const ours = rows.filter((r) => r.summary.startsWith(prefix));
+    expect(ours[0]!.summary).toBe(`${prefix}119`); // newest of our own rows first, among the top 50
+    await prisma.adminAuditLog.deleteMany({ where: { summary: { startsWith: prefix } } });
   });
 });
