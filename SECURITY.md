@@ -51,6 +51,16 @@ What's in scope:
   (especially a `ProvenanceEntity` id, which has no legitimate
   consumer-facing use anywhere in the app) leaking into a client payload;
   repetition being presented as, or confused with, corroboration.
+- AI Story Brief (Phase 11B): a publisher (via headline/claim/entity text)
+  prompting the model to overclaim, leak a reference id it was never
+  given, or emit forbidden truth/bias language; a hallucinated or
+  malformed model response reaching a viewer; a quota-reservation race
+  letting concurrent requests exceed a user's monthly AI quota; a cache
+  hit or a failed/rejected generation still consuming quota; internal
+  database ids, another user's identity, or full article/feed text
+  reaching the model's payload or an application log; the AI provider
+  network call becoming a new SSRF/denial-of-wallet surface; an AI
+  section failure breaking any other part of the story page.
 
 What's explicitly out of scope for this project's own hardening:
 
@@ -701,6 +711,108 @@ values in a claim's `id`, `entityId`, and a hostile confidence string,
 confirmed absent from the serialized view at all three entitlement tiers;
 and a 20,000-claim grouping stress test (1,000 articles × 20 claims
 across 50 distinct buckets) completing in ~31ms with correct results.
+
+**AI Story Brief (Phase 11B).** This is the first feature in the codebase
+that calls a language model, so its security model is documented
+separately and in more depth than a typical phase.
+
+_Prompt injection._ Every publisher-controlled string (headline, claim
+text, occurrence text, entity/source names) is treated as hostile.
+System instructions and the untrusted data payload are kept in
+structurally separate chat-API roles (`ollamaProvider.ts`), and the
+instructions explicitly tell the model the data block is never an
+instruction. This is deliberately documented as defense-in-depth, not the
+real boundary — a model can still be influenced by hostile text
+regardless of which role it arrived in. The actual security boundary is
+output validation (`storyBrief/schema.ts`), which runs unconditionally on
+every response: a simulated "compromised" model that fell for an injected
+instruction and wrote the forbidden word "reliable" is still rejected,
+because validation checks the model's words, not its intentions (see
+`test/aiStoryBrief.integration.test.ts`'s "M/N" and "AA/AB" cases).
+
+_Invented/hallucinated references and epistemic overclaim._ A model
+output's `refs[]` may only cite ids from the exact closed set the server
+built for that one request (`collectValidReferences()`); any other id —
+even one that looks plausible, like `CLAIM-GROUP-99` — is rejected
+(`test/aiStoryBrief.integration.test.ts`'s "T/U"). A separate, independent
+runtime language-policy validator (`languagePolicy.ts`) rejects the exact
+forbidden-term list (confirmed, verified, corroborated, true, false, lie,
+proved, disproved, biased, reliable, omitted, hid, failed to report, same
+dispatch, copied, plagiarized, independently confirmed, and negated
+variants like "unverified") regardless of what the system prompt already
+forbids — this is deliberately stricter and independent of prompt
+engineering, since this feature's narrow job never legitimately needs
+these words in any form.
+
+_Reference/id/user-data leakage._ The reference ids the model sees are
+ephemeral and per-request, never a database id. The data payload sent to
+the provider is built only from already-Pro-safe view models and is
+tested to contain no cuid-shaped internal id and no `userId`/email
+(`test/aiStoryBrief.integration.test.ts`'s "AI/AJ"). Application logs
+(`console.error` calls in `storyBrief/generate.ts`) log only an internal
+`storyClusterId` and an exception object, never the built prompt, data
+payload, or model output — tested directly by spying on `console.error`
+and asserting the logged text never contains distinctive headline/claim
+text ("AK/AL").
+
+_Quota race and denial-of-wallet._ `reserveUsage()`/`releaseUsage()`
+(`src/lib/entitlements.ts`) reserve a quota unit inside one
+`prisma.$transaction` before any provider call, and release it if the
+call fails or its output fails validation — a cache hit, an entitlement
+failure, disabled config, or insufficient input never touches quota at
+all. Concurrency safety is adversarially tested with genuine concurrent
+database writes: remaining quota of 1 with 2 simultaneous requests admits
+at most 1 new reservation, and remaining quota of 2 with 5 simultaneous
+requests admits at most 2
+(`test/aiStoryBriefQuotaRace.integration.test.ts`, "J"/"K"). A per-user
+rate limit and single-flight deduplication bound how often a single user
+can trigger a real provider call in the first place.
+
+_Cache poisoning/staleness._ The cache key includes `inputFingerprint`
+(a hash of the exact bounded input), `promptVersion`, `provider`, and
+`model` — any change to any of these (a new article, changed claims, a
+prompt rewrite, a model upgrade) produces a cache miss rather than
+serving stale content; there is no separate invalidation path that could
+fall out of sync (`test/aiStoryBrief.integration.test.ts`'s "AM"/"AN"/
+"AO"). Nothing ever writes to the cache except a response that has
+already passed full output validation, so a poisoned or malformed
+response can never be cached.
+
+_Oversized input/output, malformed provider response, XSS/URL injection._
+Input is capped well before it reaches the provider (`input.ts`'s
+per-array and per-item caps). The provider response itself is read with a
+bounded reader (`readBodyWithLimit`, fixing the gap Phase 11A identified
+in the older `ollama.ts`'s unbounded `res.json()`) and is rejected as
+oversized before ever being parsed as JSON. All output text is rendered
+as plain text (no `dangerouslySetInnerHTML` anywhere in
+`AiStoryBrief.tsx`), and any URL-like scheme in model output
+(`https:`, `javascript:`, `data:`, etc.) is rejected outright — the
+feature never renders a model-supplied link.
+
+_Provider timeout/network failure/429, fail-open behavior._ Every
+provider failure mode (`timeout`, `network_error`, `provider_error`,
+`empty_response`, `oversized_response`) is treated identically: the
+reservation is released and the result fails closed to `unavailable`,
+never fails open to showing unvalidated content
+(`test/aiStoryBrief.integration.test.ts`'s "H"/"AC/AD"/"AE/AF").
+
+_Provider network boundary._ The AI provider endpoint is an
+operator-configured fixed address (`AdminSetting`/env, the existing AI
+config precedent), with redirects disabled and a bounded timeout — this
+is a deliberately different trust boundary than the publisher-facing SSRF
+guard (`assertPublicHttpUrl`) and does not alter that guard's own
+architecture; an operator who configures their own AI endpoint is not the
+same threat as an attacker-controlled feed URL.
+
+_Failure isolation / old-pipeline regression._ A thrown error anywhere in
+generation (including a provider that throws instead of returning a
+failure response) resolves to `unavailable` rather than propagating
+(`test/aiStoryBrief.integration.test.ts`'s "AH"). The pre-existing
+`StoryCluster.summary`/`refreshSummaries()` pipeline is never read or
+written by this feature (`"AQ"`), and the full Phase 7-10 regression
+suite (provenance, source-groups, claims, coverage comparison, story
+intelligence — 26 files, 375 tests) passes unchanged alongside Phase
+11B's own suite.
 
 ## Dependency scanning
 
