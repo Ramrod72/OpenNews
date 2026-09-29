@@ -4,12 +4,25 @@ export interface AiConfig {
   provider: "none" | "ollama";
   baseUrl: string;
   model: string;
+  /**
+   * Phase 11B's own kill switch, additive to the fields above (which the
+   * pre-existing StoryCluster.summary pipeline already used, unchanged).
+   * Defaults to false: even with a provider configured for the old
+   * summary pipeline, the new AI Story Brief feature stays off until an
+   * operator explicitly enables it — the two features are independently
+   * switchable.
+   */
+  storyBriefEnabled: boolean;
+  /** Provider call timeout for AI Story Brief generation, milliseconds. */
+  storyBriefTimeoutMs: number;
 }
 
 const DEFAULT_CONFIG: AiConfig = {
   provider: "none",
   baseUrl: "http://localhost:11434",
   model: "llama3.1",
+  storyBriefEnabled: false,
+  storyBriefTimeoutMs: 12_000,
 };
 
 /**
@@ -37,5 +50,8 @@ function envDefaults(): AiConfig {
     provider,
     baseUrl: process.env.AI_BASE_URL || DEFAULT_CONFIG.baseUrl,
     model: process.env.AI_MODEL || DEFAULT_CONFIG.model,
+    storyBriefEnabled: process.env.AI_STORY_BRIEF_ENABLED === "true",
+    storyBriefTimeoutMs:
+      Number(process.env.AI_STORY_BRIEF_TIMEOUT_MS) || DEFAULT_CONFIG.storyBriefTimeoutMs,
   };
 }

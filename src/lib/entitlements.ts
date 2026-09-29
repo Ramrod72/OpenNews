@@ -101,7 +101,13 @@ export async function getLimit(userId: string | null, feature: string): Promise<
   return entitlement.limitValue;
 }
 
-function currentPeriodStart(at: Date): Date {
+/**
+ * Exported solely so tests can seed a UsageRecord row directly (a single
+ * write) instead of looping reserveUsage() dozens of times just to reach a
+ * starting count — see test/aiStoryBriefQuotaRace.integration.test.ts.
+ * Production code should still always go through reserveUsage/recordUsage.
+ */
+export function currentPeriodStart(at: Date): Date {
   return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1));
 }
 
@@ -146,4 +152,121 @@ export async function recordUsage(
     create: { userId, feature, periodStart, count: 1 },
     update: { count: { increment: 1 } },
   });
+}
+
+export interface UsageReservation {
+  /** True only if a unit was actually reserved (count incremented). False means the caller must not proceed — no unit was consumed. */
+  reserved: boolean;
+  used: number;
+  limit: number | null;
+}
+
+/**
+ * Concurrency-safe quota reservation, added for Phase 11B's AI Story
+ * Brief (which must reserve a unit BEFORE a slow provider call, then
+ * release it on failure — see releaseUsage below) but generic to any
+ * quota-limited feature.
+ *
+ * `checkUsage()` + `recordUsage()` above are NOT safe for this: they are
+ * two separate round-trips, so two concurrent callers can both read
+ * `used < limit` as true before either has written, and both then record
+ * usage, collectively exceeding the limit. This function closes that gap
+ * with the identical concurrency-safe shape persistClaimsForArticle
+ * (src/lib/claims/persistClaims.ts) and persistObservationsForArticle
+ * already establish for their own per-article caps: the read of the
+ * current count and the write that consumes the remaining budget happen
+ * inside ONE `prisma.$transaction`, so two concurrent reservations for
+ * the SAME (userId, feature, periodStart) cannot both read a stale
+ * pre-write count and collectively overshoot the limit — the database
+ * serializes the two transactions (SQLite: single writer; Postgres:
+ * standard row-level locking on the upsert), so the second transaction's
+ * read only commits after the first transaction's write is visible.
+ *
+ * A `limit === null` (unlimited) feature always reserves successfully
+ * without needing the transaction at all — there's no budget to race
+ * over. A `limit <= 0` feature (no access) never reserves.
+ */
+export async function reserveUsage(
+  userId: string,
+  feature: string,
+  at: Date = new Date(),
+): Promise<UsageReservation> {
+  const limit = await getLimit(userId, feature);
+
+  if (limit === null) {
+    await recordUsage(userId, feature, at);
+    return { reserved: true, used: 0, limit: null };
+  }
+  if (limit <= 0) {
+    return { reserved: false, used: 0, limit };
+  }
+
+  const periodStart = currentPeriodStart(at);
+  const reserved = await prisma.$transaction(
+    async (tx) => {
+      const record = await tx.usageRecord.findUnique({
+        where: { userId_feature_periodStart: { userId, feature, periodStart } },
+      });
+      const used = record?.count ?? 0;
+      if (used >= limit) return false;
+
+      if (record) {
+        await tx.usageRecord.update({
+          where: { id: record.id },
+          data: { count: { increment: 1 } },
+        });
+      } else {
+        await tx.usageRecord.create({ data: { userId, feature, periodStart, count: 1 } });
+      }
+      return true;
+    },
+    // Generous relative to Prisma's own defaults (maxWait 2s, timeout 5s):
+    // under genuine multi-way contention on this one row (several
+    // concurrent reservation attempts for the same user+feature+period),
+    // SQLite's single-writer model means later transactions legitimately
+    // queue behind earlier ones rather than failing — better to wait
+    // longer than to abort a transaction that would otherwise have
+    // succeeded, which for a QUOTA check would otherwise fail closed in a
+    // way indistinguishable from "quota exceeded" to the caller.
+    { maxWait: 10_000, timeout: 10_000 },
+  );
+
+  const finalRecord = await prisma.usageRecord.findUnique({
+    where: { userId_feature_periodStart: { userId, feature, periodStart } },
+  });
+  return { reserved, used: finalRecord?.count ?? 0, limit };
+}
+
+/**
+ * Releases (refunds) one previously-reserved unit — call this when a
+ * reserved generation ultimately fails (provider error, validation
+ * failure) so the failure doesn't permanently cost the user a quota unit.
+ * Floors at 0 (never decrements a feature with no recorded usage) and is
+ * itself a single atomic update, so a release racing another
+ * reserve/release for the same (userId, feature, periodStart) still
+ * lands on a consistent final count.
+ *
+ * Known residual limitation: if the server process crashes between a
+ * successful reservation and the call site's own release-on-failure
+ * (e.g. mid-provider-call), the reservation is never refunded. This is an
+ * accepted, documented tradeoff (the same class of risk any in-process
+ * request-scoped cleanup carries) rather than a correctness bug in this
+ * function itself.
+ */
+export async function releaseUsage(
+  userId: string,
+  feature: string,
+  at: Date = new Date(),
+): Promise<void> {
+  const periodStart = currentPeriodStart(at);
+  await prisma.$transaction(
+    async (tx) => {
+      const record = await tx.usageRecord.findUnique({
+        where: { userId_feature_periodStart: { userId, feature, periodStart } },
+      });
+      if (!record || record.count <= 0) return;
+      await tx.usageRecord.update({ where: { id: record.id }, data: { count: { decrement: 1 } } });
+    },
+    { maxWait: 10_000, timeout: 10_000 },
+  );
 }

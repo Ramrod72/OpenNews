@@ -1146,6 +1146,145 @@ route, Story Map, Primary Evidence UI (the document-identity gap Phase
 it happens, would consume this phase's structured `Claim`/`ClaimGroup`
 output — it has not been started.
 
+## AI Story Brief — Pro AI intelligence layer (Phase 11B)
+
+Phase 11B adds Veriqen's first feature that calls a language model at
+request time. Its locked core principle: **AI may explain Veriqen's
+structured data. AI must not become a source of truth.** Every other
+design decision in this section follows from that one rule.
+
+**AI-above-deterministic-systems.** The model sits strictly on top of the
+deterministic pipelines Phases 7-10 already built (provenance extraction,
+source-group reasoning, claim grouping, coverage comparison) — it never
+replaces, second-guesses, or independently re-derives any of their output.
+It cannot determine what actually happened, which account is correct,
+whether anything is true/false/biased/reliable, or whether one article's
+sourcing is more "independent" than another's — those are exactly the
+judgments Phases 7-10 themselves refuse to make (see the Coverage
+Comparison section above), and the AI layer inherits the same refusal
+rather than smuggling a soft version of it back in through model
+narration.
+
+**Structured input boundary — no full article text, ever.**
+`src/lib/ai/storyBrief/input.ts`'s `buildAiStoryBriefInput()` is the
+_only_ way data reaches the model, and it is built exclusively from two
+already-safe, already-bounded view models: `StoryIntelligenceView`
+(Phase 9B) and `CoverageComparisonView` (Phase 10B, which itself embeds
+the headline comparison). It never touches a raw Prisma `Article`,
+`Claim`, or `ProvenanceObservation` row, and never independently
+re-queries the database. This means the model can never see more than a
+Pro viewer's browser already renders on the story page — no raw article
+excerpt or feed text, no internal database ids, no user email/id/
+subscription id, no saved-stories or browsing-history data, and no
+`ExternalAssessment`/source-profile ratings. Total input is capped at
+roughly 4,000 characters (≤10 claim groups, ≤5 source groups, ≤10
+headlines, each item ≤200 chars).
+
+**Ephemeral, per-request reference ids.** Every fact handed to the model
+carries a fresh id built only for that one request — `CLAIM-GROUP-N`,
+`SOURCE-GROUP-N`, `HEADLINE-N` — never a database id, never stable across
+requests. `collectValidReferences()` builds the exact closed set of valid
+ids from the same input, and the server independently validates every
+`refs[]` entry a model output cites against that set — a model-supplied
+ref is never trusted merely because it has the right shape.
+
+**Prompt-injection model.** All publisher-controlled text (headlines,
+claim text, occurrence text, entity/source names) is treated as hostile.
+`src/lib/ai/storyBrief/prompt.ts` keeps system instructions and the data
+payload structurally separate (a chat API's `system`/`user` roles —
+`ollamaProvider.ts` — never one concatenated string), and the
+instructions explicitly tell the model that the data block is data, never
+an instruction, even if it reads like one. This separation is
+**defense-in-depth, not the security boundary**: a model still reads both
+as one token stream and can be influenced regardless of which "role" the
+hostile text arrived in. The real boundary is output validation, which
+runs unconditionally on every response regardless of what the model was
+told or shown.
+
+**Grounded output contract and validation pipeline.**
+`src/lib/ai/storyBrief/schema.ts` defines the only shape a response may
+take: `summary` plus `commonAssertions`/`coverageDifferences`/
+`sourceOverlapNotes` (arrays of `{text, refs}`, `refs` required and
+non-empty), `unresolvedQuestions` (`{text}`, no refs — describing an
+absence needs no citation), and a `limitations` field that is **always
+server-templated**, never accepted from the model. `validateAiStoryBriefOutput()`
+runs, in order: raw-length cap → JSON parse → plain-object/unknown-field
+rejection (top-level and per-statement) → length/array caps → URL-scheme
+rejection (explicit allowlist, not generic pattern matching) → a runtime
+forbidden-language check (`languagePolicy.ts` — an independent second
+layer beyond the system prompt, covering "confirmed," "verified,"
+"biased," "omitted," "same dispatch," etc., in any form) → refs-required
+and refs-must-exist-in-server-set checks. At most one regeneration is
+attempted after invalid output, then the request fails closed to
+`unavailable` — malformed output is never partially rendered.
+
+**Provider abstraction and network boundary.** `src/lib/ai/provider.ts`
+defines a narrow `AIProvider.generateStructured()` interface; the only
+implementation is `storyBrief/ollamaProvider.ts`, built on the existing
+Ollama architecture (no new vendor SDK). It uses a bounded response
+reader (fixing the gap Phase 11A identified in the older, unrelated
+`src/lib/ai/ollama.ts`'s unbounded `res.json()`), disables redirects, and
+enforces a timeout. The outbound boundary is an operator-configured fixed
+endpoint (`AdminSetting`/env, same precedent as the old AI config) —
+distinct from, and never altering, the publisher-facing SSRF guard
+(`assertPublicHttpUrl`), which governs a completely different trust
+boundary (fetching feeds Veriqen doesn't control) than this one (calling
+an endpoint the operator themselves configured). Tests use a deterministic
+mock provider (`src/lib/ai/testing/mockProvider.ts`); no test depends on
+a live provider.
+
+**Caching and quota semantics.** `AiStoryBrief`
+(`prisma/migrations/20260929010000_phase11b_ai_story_brief/`) is one
+additive table that doubles as both the persisted artifact and the
+cache, keyed by `[storyClusterId, feature, inputFingerprint,
+promptVersion, provider, model]`. The fingerprint
+(`storyBrief/fingerprint.ts`) is a SHA-256 of the exact bounded input
+object, so cache invalidation happens "for free" whenever anything the
+model actually saw changes (new article, changed claims/provenance, an
+extractor-version bump, or a prompt/model-version bump) — there is no
+separate invalidation logic to keep in sync. A cache hit returns the
+validated cached JSON directly and **never** calls the provider or
+touches quota. Quota (the existing `ai_monthly_quota` entitlement, gated
+by the existing `cross_source_synthesis` boolean — Phase 11A's key
+finding was that both were already seeded and needed no schema change) is
+consumed **only** after a provider call succeeded and its output passed
+every validation step; provider failures, validation failures, empty
+responses, entitlement failures, and cache hits never cost a unit.
+`reserveUsage()`/`releaseUsage()` (`src/lib/entitlements.ts`) implement
+this as a reserve-before-call, release-on-failure pattern, concurrency-safe
+via the identical single-transaction read+write shape Phase 10B's
+`persistClaimsForArticle` already established for its own per-article
+caps (see `test/aiStoryBriefQuotaRace.integration.test.ts` for the
+adversarial concurrent-reservation proof). A per-user rate limit and
+in-memory single-flight deduplication (`storyBrief/singleFlight.ts`)
+further reduce redundant provider calls for near-simultaneous identical
+requests.
+
+**Failure isolation.** `src/lib/aiStoryBrief.ts` wraps the whole feature
+in its own top-level try/catch, and the orchestrator itself
+(`storyBrief/generate.ts`) independently fails closed to `unavailable` on
+any internal exception — including one from the quota-reservation step
+itself — rather than relying solely on the caller's own error handling. A
+provider outage, validation failure, or any other internal error makes
+the AI Story Brief section unavailable; it never breaks Story
+Intelligence, Coverage Comparison, the Timeline, sharing, bookmarking,
+ads, or the rest of the story page.
+
+**Old summary pipeline — separate and untouched.** The pre-existing
+`StoryCluster.summary` / `refreshSummaries()` extractive-summary pipeline
+(see `src/lib/ai/index.ts`) is a completely different feature with its
+own independent kill switch and its own `/api/generate`-based Ollama
+call. Phase 11B never reads or writes `StoryCluster.summary`, never
+reuses its provider call path, and can be enabled/disabled independently
+via its own `storyBriefEnabled` config flag.
+
+**UI placement.** The AI Story Brief renders on `/story/[slug]`
+immediately after "Common assertions across coverage" and before
+"Compare coverage," collapsed by default behind a native `<details>`
+(zero client JS), with a persistent "AI-generated" label and a "How was
+this generated?" disclosure. Free/Basic viewers see a teaser only — the
+full brief is never generated server-side merely to hide it client-side.
+
 ## Known limitations / natural next steps
 
 - Clusters never merge after creation, even if two initially-separate
