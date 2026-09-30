@@ -6,7 +6,15 @@ services:
     image: opennews:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Bound to loopback only: this app has no TLS of its own and must
+      # never be reached directly from the public Internet in plaintext
+      # (see DEPLOYMENT.md's "Reverse proxy + HTTPS" section, required
+      # reading before production use). A reverse proxy on the SAME host
+      # reaches it via 127.0.0.1:3000 exactly as shown there; a reverse
+      # proxy running as ANOTHER container on this compose network reaches
+      # it via the internal service name/port (http://web:3000) instead,
+      # which this binding does not affect at all.
+      - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: "file:/data/opennews.db"
       SESSION_SECRET: "${SESSION_SECRET:?Set SESSION_SECRET in .env, e.g. via: openssl rand -base64 32}"

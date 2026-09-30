@@ -4,6 +4,16 @@ import { ArrowLeft } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { SourceProfileManager } from "./SourceProfileManager";
 
+// Admin auth here comes from middleware (src/proxy.ts), not cookies()/
+// headers() inside the page itself, so nothing else forces this page to
+// render dynamically per request -- without this, Next's default static
+// optimization would prerender it once at build time and keep serving
+// that same snapshot after an admin edits the source, exactly the bug
+// class Phase 13 fixed on every OTHER protected admin page (see
+// ARCHITECTURE.md's "Known limitations"). This page reads live data
+// (source + externalAssessments) so it needs the same fix.
+export const dynamic = "force-dynamic";
+
 export default async function AdminSourceProfilePage({
   params,
 }: {

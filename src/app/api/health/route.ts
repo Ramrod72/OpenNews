@@ -6,9 +6,11 @@ export async function GET() {
     await prisma.$queryRaw`SELECT 1`;
     return NextResponse.json({ status: "ok", time: new Date().toISOString() });
   } catch (err) {
-    return NextResponse.json(
-      { status: "error", message: err instanceof Error ? err.message : "unknown" },
-      { status: 503 },
-    );
+    // This is public and unauthenticated (it's a healthcheck endpoint), so
+    // the raw exception is logged server-side only — it can carry driver
+    // error text (hostnames, ports, connection-string fragments) that must
+    // never reach an unauthenticated caller. See test/healthEndpointDisclosure.test.ts.
+    console.error("[health] readiness check failed:", err);
+    return NextResponse.json({ status: "error" }, { status: 503 });
   }
 }

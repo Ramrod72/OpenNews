@@ -47,6 +47,7 @@ COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY public ./public
 COPY config ./config
 COPY worker ./worker
+COPY scripts ./scripts
 COPY src ./src
 COPY tsconfig.json next.config.ts ./
 COPY docker/entrypoint.sh ./docker/entrypoint.sh

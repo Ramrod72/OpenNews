@@ -13,6 +13,22 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
+**Before exposing this to real users, put a reverse proxy in front of it
+and terminate TLS there (required — Phase 14B).** `docker-compose.yml`
+binds the `web` service's port to `127.0.0.1` only, precisely so that
+nothing but a reverse proxy on the same host (or another container on
+this same compose network, reachable via `http://web:3000` regardless of
+the host port binding) can reach it — this app has no TLS of its own and
+must never be reached directly, in plaintext, from the public Internet.
+See "Reverse proxy + HTTPS" below for the exact Nginx/Caddy configuration
+(including the `X-Real-IP`/`X-Forwarded-For` setup every rate limiter in
+this app depends on) — it applies identically whether you're running
+Docker Compose or the bare-metal path. After it's up, verify from
+OUTSIDE the host: `curl -v http://<host-ip>:3000/` should fail to
+connect (nothing is listening on that interface/port), and
+`https://your-domain.example/` should both succeed and redirect any
+plain `http://` request to `https://`.
+
 - `web` runs `prisma migrate deploy` and seeds `config/` on startup (via
   `docker/entrypoint.sh`), then `npm start` (Next.js production server).
 - `worker` waits for `web`'s healthcheck, then runs
@@ -48,9 +64,26 @@ npm ci --legacy-peer-deps
 cp .env.example .env   # edit DATABASE_URL to an absolute path outside the repo, e.g.
                          # DATABASE_URL="file:/var/lib/opennews/opennews.db"
 npx prisma migrate deploy
+npm run db:wal      # one-time: puts SQLite in WAL mode (see below)
 npm run db:seed
 npm run build
 ```
+
+**`npm run db:wal` (Phase 14B — required once, SQLite only).** The
+Docker Compose path runs this automatically on every container start (see
+`docker/entrypoint.sh`); the bare-metal path must run it manually, once,
+after the first `prisma migrate deploy` against the real database file.
+It switches SQLite's journal mode from the default (`DELETE`, the
+classic rollback journal) to `WAL`, which lets the `web` and `worker`
+processes read and write the shared database file concurrently without
+blocking each other — the standard, SQLite-recommended setting for
+exactly this "multiple processes, one file" topology. It's idempotent
+(safe to re-run any time) and a no-op if `DATABASE_URL` isn't a SQLite
+`file:` URL (e.g. after switching to PostgreSQL). See
+`scripts/ensure-sqlite-wal.mjs`'s own doc comment for the full
+investigation this was based on, including why a `?journal_mode=WAL`
+query parameter on `DATABASE_URL` does NOT work with Prisma's SQLite
+connector (verified empirically) and must be set this way instead.
 
 Run two long-lived processes (systemd units, or a process manager like
 `pm2`):
@@ -86,23 +119,66 @@ Duplicate it as `opennews-worker.service` with
 
 ### Reverse proxy + HTTPS
 
-Put Nginx or Caddy in front of the `web` process (port 3000 by default) to
-terminate TLS. Caddy example (`Caddyfile`):
+**Applies to both deployment paths above** — Docker Compose and bare-metal
+alike. Put Nginx or Caddy in front of the `web` process (port 3000 by
+default, bound to loopback only in `docker-compose.yml` for exactly this
+reason) to terminate TLS. Production traffic must never reach this app
+directly, in plaintext.
+
+**Trusted-proxy / client-IP model (Phase 14B).** Veriqen's every IP-keyed
+rate limiter (admin login's per-IP bucket, consumer login/registration,
+billing checkout/portal, the general per-route API limiter — all in
+`src/lib/rateLimit.ts`'s `clientIp()`) assumes **exactly one** trusted
+reverse proxy sits between the Internet and the app. That proxy MUST do
+one of the following — an Internet client can always send its own
+`X-Forwarded-For`/`X-Real-IP` values, so if the proxy doesn't correctly
+overwrite/append its own view of the connection, an attacker can spoof
+whatever client identity they like and rate limiting stops meaning
+anything:
+
+1. **Preferred: set `X-Real-IP` to the proxy's own view of the connecting
+   peer.** This is an overwrite, not an append, so there is only ever one
+   possible value and a client cannot influence it. `clientIp()` reads
+   this header first, whenever it's present.
+2. **Or: append (never replace) the connecting peer's address as the
+   LAST entry of `X-Forwarded-For`.** `clientIp()` reads the RIGHTMOST
+   entry of this header — never the leftmost, which is always whatever
+   the original client chose to send and must never be trusted.
+
+Caddy example (`Caddyfile`) setting `X-Real-IP` explicitly:
 
 ```
 your-domain.example {
-        reverse_proxy localhost:3000
+        reverse_proxy localhost:3000 {
+                header_up X-Real-IP {remote_host}
+        }
 }
 ```
 
-Caddy handles Let's Encrypt certificates automatically. For Nginx, use
-`certbot --nginx` or your existing TLS setup, and make sure to forward
-`X-Forwarded-For` — the admin login rate limiter
-(`src/lib/rateLimit.ts`) and the general API rate limiter
-(`src/proxy.ts`) key off that header, so a reverse proxy that doesn't set it
-correctly weakens both. Phase 13B's additional process-global admin-login
-limiter (`src/lib/adminLoginRateLimit.ts`) doesn't key off any IP at all,
-so it isn't affected by this — but like every rate limiter in this app it
+Caddy handles Let's Encrypt certificates automatically. Nginx example
+(use `certbot --nginx` or your existing TLS setup for the certificate
+itself):
+
+```
+location / {
+    proxy_pass http://localhost:3000;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`$remote_addr` is nginx's own view of the connecting peer (an overwrite,
+safe), and `$proxy_add_x_forwarded_for` appends that same peer address as
+the last entry of any existing `X-Forwarded-For` (safe, since only the
+last entry is ever trusted). **Do not** put a second, additional reverse
+proxy or CDN in front of this one unless it also participates correctly
+in this chain — an extra untrusted hop would let that hop's own client
+input reach the position `clientIp()` treats as authoritative.
+
+Phase 13B's additional process-global admin-login limiter
+(`src/lib/adminLoginRateLimit.ts`) doesn't key off any IP at all, so it
+isn't affected by any of this — but like every rate limiter in this app it
 is in-memory and per-process: behind a load balancer running multiple
 app instances/replicas, each instance enforces its own independent
 budget, not a shared one.
@@ -145,6 +221,22 @@ See [`.env.example`](./.env.example) for the full list with descriptions.
 At minimum you need `SESSION_SECRET` and either `ADMIN_PASSWORD_HASH`
 (recommended) or `ADMIN_PASSWORD` (local dev only) to use the admin panel;
 everything else has a working default.
+
+**`SESSION_SECRET` is required in production, with no working fallback
+(Phase 14B).** It must be a real, random value of at least 32 characters
+(`openssl rand -base64 32` produces one). If it is missing, empty, or
+shorter than 32 characters when `NODE_ENV=production`, the admin session
+mechanism fails closed: every `/admin/*` page and API route returns an
+error instead of ever creating or accepting an admin session. This is
+intentional — earlier phases silently signed sessions with a hardcoded,
+publicly-visible development-only value in this situation, which would
+have let anyone who has read this repository's source forge a valid admin
+cookie. The failure is scoped to the admin surface only; the rest of the
+site is unaffected by a missing `SESSION_SECRET`. A misconfiguration is
+also logged loudly (`[auth] SESSION_SECRET is missing or shorter than 32
+characters...`) the first time the app is invoked, so it's visible in
+container/process logs at boot rather than only being discovered on the
+first admin request.
 
 ### Site URL
 

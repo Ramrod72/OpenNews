@@ -19,7 +19,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:wal": "node scripts/ensure-sqlite-wal.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

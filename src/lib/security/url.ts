@@ -21,6 +21,15 @@ export async function assertPublicHttpUrl(rawUrl: string): Promise<URL> {
     throw new Error(`Unsupported protocol: ${url.protocol}`);
   }
 
+  // A userinfo segment (`https://user:pass@host`) has no legitimate use for
+  // a feed/redirect target and is a classic way to smuggle credentials or
+  // make a URL's visible host misleading — same check already applied to
+  // every other URL this app treats as a link target (see
+  // src/lib/security/sanitize.ts's safeHttpUrl).
+  if (url.username !== "" || url.password !== "") {
+    throw new Error("Refusing to fetch a URL with embedded credentials");
+  }
+
   const hostname = url.hostname.toLowerCase();
   if (hostname === "localhost" || hostname.endsWith(".localhost")) {
     throw new Error("Refusing to fetch localhost");

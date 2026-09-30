@@ -139,15 +139,99 @@ any page code — not in a layout, which cannot actually block its children
 from rendering in the App Router (see ARCHITECTURE.md for the specific bug
 this avoids).
 
+**Client-IP trust model for every IP-keyed rate limiter (Phase 14B).**
+`clientIp()` (`src/lib/rateLimit.ts`) previously trusted the _leftmost_
+entry of `X-Forwarded-For` — the part of that header an Internet client
+controls outright — so an attacker could prepend a fresh fake address on
+every request and never reuse the same rate-limit bucket twice, fully
+defeating every per-IP limiter in the app (admin login, consumer
+login/registration, billing checkout/portal, the general API limiter).
+Fixed: `clientIp()` now prefers `X-Real-IP` (trusted only because the
+documented reverse-proxy config _overwrites_ it with the proxy's own view
+of the connection, never appends to a client-supplied value — see
+DEPLOYMENT.md) and otherwise reads the _rightmost_ entry of
+`X-Forwarded-For` (the proxy's own appended value under the documented
+single-hop config), never the leftmost. This assumes exactly one trusted
+reverse proxy configured as DEPLOYMENT.md describes; an operator who
+skips that reverse-proxy step (or fronts the app with an additional,
+non-participating hop) leaves every per-IP limiter as spoofable as
+before. Registration (`POST /api/account/register`) additionally gained a
+process-global backstop (50 attempts / 10 minutes, all requests
+regardless of claimed IP) since, unlike login, it has no secondary
+per-target key (e.g. email) to fall back on once IP rotation is in play.
+
 **Denial of service / abuse of public endpoints.** `src/proxy.ts` applies a
 per-IP rate limit (120 requests/minute) to all `/api/*` routes. This is an
 in-memory limiter suitable for a single instance; a multi-instance
 deployment behind a load balancer should add a shared limiter (e.g.
 Redis-backed) at the reverse proxy layer instead.
 
+**Dedicated limits on the most expensive public reads (Phase 14B).**
+`GET /api/search`, `GET /api/stories`, and `GET /api/stories/[slug]` each
+additionally enforce their own 60-requests/minute-per-IP budget — tighter
+than the general 120/min blanket limit above, specifically because
+`/api/search` runs a multi-join query plus in-memory relevance scoring
+over up to 800 candidate rows per request (`src/lib/search.ts`'s
+`CANDIDATE_LIMIT`), the single most expensive public, unauthenticated
+read in the app. Deliberately NOT applied to the catalog-style endpoints
+(`/api/sources`, `/api/categories`, `/api/plans`, `/api/sources/[id]`,
+`/api/ads/eligibility`) — these are simple, bounded, cheap lookups, and
+rate-limiting them would add friction with no real cost-amplification
+risk to defend against. Same in-memory, per-process, single-instance
+limitation as every other limiter in this app; keyed off the corrected
+`clientIp()` (see the client-IP trust model note above).
+
+**Story page resource protection (Phase 14B).** `/story/[slug]` is the
+single most expensive page render in the app — per-cluster graph/claim
+computation plus a possible AI Story Brief call, recomputed on every
+request (it has no meaningful response cache; see ARCHITECTURE.md's Phase
+14B note on why). It has no API route of its own, so `src/proxy.ts`
+middleware enforces a 100-requests/minute-per-IP budget directly on the
+`/story/*` path before the page ever renders, the same way it already
+gates `/api/*` and `/admin/*`. This adds no caching of any kind, so it
+cannot introduce cross-viewer/cross-entitlement data leakage — Free/Basic/
+Pro redaction is entirely unaffected and unchanged.
+
 **Malicious/oversized feed responses.** Feed fetches have a 15s timeout and
 a 5MB response size cap (`src/lib/ingest/fetchFeed.ts`), enforced by
 reading the stream incrementally rather than trusting `Content-Length`.
+
+**Unbounded item count per feed (Phase 14B).** The 5MB size cap above
+bounds total response bytes, but a bare title+link `<item>` is only
+~100-150 bytes — a malicious/compromised feed could still pack tens of
+thousands of minimal entries into that budget, and each one previously
+triggered a full round of DB writes plus provenance/claim extraction with
+no upper bound on count. `persistItems` (`src/lib/ingest/ingestSource.ts`)
+now caps processing at `MAX_ITEMS_PER_FETCH` (500 — comfortably above any
+legitimate feed size seen in practice) per fetch; anything beyond that is
+silently skipped, with a single log line recording the true item count
+and how many were dropped (counts only, never any item content, so a
+hostile feed's actual bulk content never reaches a log file).
+
+**SSRF via redirect (Phase 14B).** `assertPublicHttpUrl`
+(`src/lib/security/url.ts`) rejects non-http(s) schemes, embedded
+credentials (`https://user:pass@host`), and any hostname that resolves to
+a private/loopback/link-local/CGNAT address (including the
+`169.254.169.254` cloud metadata address) — but a feed origin that passes
+this check at fetch time could still return an HTTP redirect pointing
+somewhere unsafe. `fetchAndParseFeed` now follows redirects manually and
+re-runs this exact same check against every redirect target (resolved
+against the current URL first, so a relative `Location` is handled
+correctly) before ever connecting to it, capped at 5 hops. A feed origin
+that is legitimate when an admin adds it but is later compromised,
+DNS-hijacked, or simply reconfigured to redirect into internal
+infrastructure can no longer reach it this way. **Residual risk:** DNS
+rebinding (the check resolves DNS itself; the actual fetch re-resolves
+independently) is unchanged and remains a narrow, accepted risk — see
+ARCHITECTURE.md's "Known limitations" for the full reasoning on why this
+is materially harder to exploit than the redirect gap just closed.
+
+**Health endpoint error disclosure (Phase 14B).** `GET /api/health` is
+public and unauthenticated. On a DB failure it previously echoed the raw
+exception message into the response body — which can carry hostnames,
+ports, or connection-string fragments depending on the driver's error
+formatting. It now returns only `{status:"error"}`; the real exception is
+logged server-side (`console.error`) only.
 
 **Security headers.** `next.config.ts` sets `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`,
@@ -159,9 +243,24 @@ the default policy will otherwise silently block it. This tradeoff is
 intentional: secure by default, with an explicit, visible step required to
 loosen it.
 
-**Secrets.** `.env` is gitignored. `SESSION_SECRET` must be set for the
-admin session to work at all in production (an insecure fallback is used
-otherwise and a warning is logged). Admin passwords should be stored as a
+**Secrets.** `.env` is gitignored. `SESSION_SECRET` must be set to a real,
+random value of at least 32 characters for the admin session to work at
+all in production (Phase 14B). Unlike earlier phases, a missing or
+too-short `SESSION_SECRET` in production is no longer a silent fallback: it
+fails closed. `getSessionOptions()` (`src/lib/auth/sessionOptions.ts`)
+throws whenever `NODE_ENV === "production"` and the secret is absent, empty,
+or shorter than 32 characters, and every real admin request path
+(`src/proxy.ts`'s `/admin/*` guard, and `getAdminSession()` used by every
+admin API route) goes through it — so a misconfigured deployment can never
+create or verify an admin session, rather than silently signing sessions
+with the hardcoded development-only fallback string that is plainly visible
+in this public repository. A loud `console.error` is also emitted the first
+time the module loads in that state, so the misconfiguration is visible in
+process/container logs at boot, not just on the first admin request. This
+deliberately does not crash unrelated public routes — only the admin
+surface fails closed. Outside production (local dev, tests), a missing
+secret still falls back to the fixed development-only value, so a fresh
+checkout works with no configuration. Admin passwords should be stored as a
 bcrypt hash, not plaintext, in any deployment beyond local development.
 
 **Consumer password storage.** Passwords are hashed with `bcryptjs` (cost
