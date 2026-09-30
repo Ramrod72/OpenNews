@@ -72,7 +72,7 @@ const CATALOG: CatalogEntry[] = [
     kind: "boolean-toggle",
     key: "ads_enabled",
     whenTrue: { label: "Includes advertising", status: "live" },
-    whenFalse: { label: "Ad-free browsing", status: "planned" },
+    whenFalse: { label: "Ad-free browsing", status: "live" },
     positiveWhen: "false",
   },
   {
@@ -87,8 +87,8 @@ const CATALOG: CatalogEntry[] = [
   {
     kind: "boolean-toggle",
     key: "coverage_comparison_full",
-    whenTrue: { label: "Full coverage comparison", status: "planned" },
-    whenFalse: { label: "Basic coverage comparison", status: "planned" },
+    whenTrue: { label: "Full coverage comparison", status: "live" },
+    whenFalse: { label: "Basic coverage comparison", status: "live" },
     positiveWhen: "true",
   },
   {
@@ -109,7 +109,7 @@ const CATALOG: CatalogEntry[] = [
     kind: "boolean-positive",
     key: "provenance_full",
     label: "Full source trails & transparency",
-    status: "planned",
+    status: "live",
   },
   { kind: "limit", key: "notifications_limit", noun: "notifications", status: "planned" },
   {
@@ -146,13 +146,13 @@ const CATALOG: CatalogEntry[] = [
     kind: "boolean-positive",
     key: "cross_source_synthesis",
     label: "Cross-source synthesis",
-    status: "planned",
+    status: "live",
   },
   {
     kind: "boolean-positive",
     key: "claim_comparison",
     label: "Claim comparison",
-    status: "planned",
+    status: "live",
   },
   {
     kind: "boolean-positive",

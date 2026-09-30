@@ -401,6 +401,19 @@ Zod refinement (`httpUrl` in `src/lib/validation/sourceProfile.ts`),
 rejecting `javascript:`/`data:`/any other scheme before it's ever stored,
 so a reference link can't become a stored-XSS vector via `href`.
 
+**Fixed (Phase 15 QA): `PATCH /api/admin/sources/[id]`'s own `url` field
+used a bare `z.string().url()` instead of the same `httpUrl` refinement
+used by every other URL field on this route — a `javascript:`/`data:`
+value would pass validation and be stored, then rendered as a raw,
+unsanitized `href` in the admin sources list ("Visit site"), giving any
+authenticated admin session a stored-XSS path into its own admin panel.
+Now uses `httpUrl`, matching the `POST /api/admin/sources` route's `url`
+field exactly. Regression-tested in
+`test/sourceProfileAdmin.integration.test.ts` against the real PATCH
+handler for `javascript:`, `data:`, `file:`, `ftp:`, and
+credential-bearing URLs, confirming both the 400 rejection and that the
+stored value is left unchanged.
+
 The public `GET /api/sources/[id]` route requires no authentication (this
 data — publisher name, description, third-party ratings — is meant to be
 public, same as the existing `/api/sources` list) but its response is

@@ -61,6 +61,14 @@ describe("buildNewHighlights", () => {
     // Not part of Basic at all.
     expect(l).not.toContain("Advanced filtering");
     expect(l).not.toContain("AI story summaries");
+
+    // Ad-free browsing and full coverage comparison are genuinely live today;
+    // saved/custom-topic limits and detailed source profiles are not yet built.
+    const byLabel = new Map(highlights.map((h) => [h.label, h.status]));
+    expect(byLabel.get("Ad-free browsing")).toBe("live");
+    expect(byLabel.get("Full coverage comparison")).toBe("live");
+    expect(byLabel.get("Unlimited saved stories")).toBe("planned");
+    expect(byLabel.get("Detailed source profiles")).toBe("planned");
   });
 
   it("Pro's new-vs-Basic highlights are only what Pro adds on top of Basic", () => {
@@ -80,10 +88,19 @@ describe("buildNewHighlights", () => {
     expect(l).not.toContain("Ad-free browsing");
     expect(l).not.toContain("Unlimited saved stories");
 
-    // None of Pro's exclusive capabilities are live yet — that must be disclosed, not hidden.
-    for (const h of highlights) {
-      expect(h.status).toBe("planned");
-    }
+    // Cross-source synthesis (AI Story Brief) and claim comparison are genuinely
+    // live, entitlement-enforced features today; the rest of Pro's exclusives
+    // are not yet built — each must be disclosed accurately, not lumped together.
+    const byLabel = new Map(highlights.map((h) => [h.label, h.status]));
+    expect(byLabel.get("Cross-source synthesis")).toBe("live");
+    expect(byLabel.get("Claim comparison")).toBe("live");
+    expect(byLabel.get("AI story summaries")).toBe("planned");
+    expect(byLabel.get("Historical source analysis")).toBe("planned");
+    expect(byLabel.get("Research tools")).toBe("planned");
+    expect(byLabel.get("Export capabilities")).toBe("planned");
+    expect(byLabel.get("Advanced filtering")).toBe("planned");
+    expect(byLabel.get("Unlimited notifications")).toBe("planned");
+    expect(byLabel.get("Up to 50 AI actions per month")).toBe("planned");
   });
 });
 
@@ -97,12 +114,25 @@ describe("buildComparisonRows", () => {
     }
   });
 
-  it("ad-free browsing: not included for Free, included for Basic and Pro", () => {
+  it("ad-free browsing: not included for Free, included for Basic and Pro, and genuinely live either way", () => {
     const row = rows.find((r) => r.key === "ads_enabled");
     expect(row).toBeDefined();
     expect(row!.cells[0].included).toBe(false); // Free
     expect(row!.cells[1].included).toBe(true); // Basic
     expect(row!.cells[2].included).toBe(true); // Pro
+    for (const cell of row!.cells) {
+      expect(cell.status).toBe("live");
+    }
+  });
+
+  it("coverage comparison and source trails/transparency are marked live, not planned", () => {
+    for (const key of ["coverage_comparison_full", "provenance_full"]) {
+      const row = rows.find((r) => r.key === key);
+      expect(row, `expected a row for ${key}`).toBeDefined();
+      for (const cell of row!.cells) {
+        if (cell.status) expect(cell.status).toBe("live");
+      }
+    }
   });
 
   it("AI story summaries: only included for Pro, and marked as not live", () => {
