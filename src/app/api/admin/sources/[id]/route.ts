@@ -16,12 +16,14 @@ const PROFILE_FIELDS = [
 
 const updateSchema = z.object({
   name: z.string().min(1).max(200).optional(),
-  url: z.string().url().optional(),
   // http(s)-only (not a bare z.string().url(), which would also accept
-  // javascript:/data:/etc.) — homepageUrl is rendered as a clickable link
-  // on both the story page ("Visit site") and the Phase 6 source-profile
-  // page ("Visit website"), so an unsafe scheme here is a real,
-  // click-triggered XSS vector, not just a cosmetic issue.
+  // javascript:/data:/etc.) — url and homepageUrl are both rendered as
+  // real clickable links in the admin sources list ("Visit site") and on
+  // the Phase 6 source-profile page ("Visit website"), so an unsafe
+  // scheme here is a real, click-triggered XSS vector, not just a
+  // cosmetic issue. Matches the POST /api/admin/sources route's `url`
+  // validation exactly.
+  url: httpUrl.optional(),
   homepageUrl: httpUrl.optional().or(z.literal("")).optional(),
   categorySlug: z.string().min(1).optional(),
   fetchIntervalMinutes: z.number().int().min(5).max(1440).optional(),

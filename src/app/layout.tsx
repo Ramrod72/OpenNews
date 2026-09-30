@@ -33,9 +33,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full overflow-x-hidden antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-background text-foreground">
+      <body className="flex min-h-full flex-col overflow-x-hidden bg-background text-foreground">
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
@@ -50,7 +50,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               Skip to content
             </a>
             <Header />
-            <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
+            <main id="main-content" className="mx-auto w-full min-w-0 max-w-6xl flex-1 px-4 py-6">
               {children}
             </main>
             <Footer />

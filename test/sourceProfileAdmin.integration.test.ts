@@ -269,6 +269,46 @@ describe("PATCH /api/admin/sources/[id] — profile allowlist cannot smuggle ing
     });
     expect(res.status).toBe(400);
   });
+
+  // Phase 15 QA: PATCH's `url` field previously used a bare z.string().url(),
+  // which (unlike homepageUrl/logoUrl on this same schema, and unlike the
+  // POST /api/admin/sources route's own `url` field) accepts any
+  // syntactically valid URL regardless of scheme — including javascript:/
+  // data:. Source.url is rendered as a raw, unsanitized href in the admin
+  // sources list ("Visit site"), so this was a stored-XSS path reachable by
+  // any authenticated admin (or anything that can forge a PATCH past
+  // requireAdmin). Now uses the same httpUrl schema as everywhere else.
+  const unsafeUrlsForPatch = [
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "file:///etc/passwd",
+    "ftp://example.com/feed.xml",
+    "https://user:pass@evil.example.com/feed.xml",
+  ];
+
+  for (const bad of unsafeUrlsForPatch) {
+    it(`rejects PATCH url=${JSON.stringify(bad)} with 400 and leaves the stored url unchanged`, async () => {
+      await signInAsAdmin();
+      const before = await prisma.source.findUniqueOrThrow({ where: { id: sourceAId } });
+      const res = await patchSource(authedReq("PATCH", { url: bad }), {
+        params: Promise.resolve({ id: sourceAId }),
+      });
+      expect(res.status).toBe(400);
+      const after = await prisma.source.findUniqueOrThrow({ where: { id: sourceAId } });
+      expect(after.url).toBe(before.url);
+    });
+  }
+
+  it("accepts a plain https:// url update for PATCH and actually persists it", async () => {
+    await signInAsAdmin();
+    const res = await patchSource(
+      authedReq("PATCH", { url: "https://patched-url-test.example.com/feed.xml" }),
+      { params: Promise.resolve({ id: sourceAId }) },
+    );
+    expect(res.status).toBe(200);
+    const stored = await prisma.source.findUniqueOrThrow({ where: { id: sourceAId } });
+    expect(stored.url).toBe("https://patched-url-test.example.com/feed.xml");
+  });
 });
 
 describe("POST /api/admin/sources — create-source URL validation", () => {
