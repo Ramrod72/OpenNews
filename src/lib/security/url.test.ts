@@ -35,4 +35,9 @@ describe("assertPublicHttpUrl", () => {
   it("rejects malformed URLs", async () => {
     await expect(assertPublicHttpUrl("not a url")).rejects.toThrow();
   });
+
+  it("rejects a URL with embedded credentials (userinfo), even against an otherwise-public IP", async () => {
+    await expect(assertPublicHttpUrl("http://user:pass@8.8.8.8/feed.xml")).rejects.toThrow();
+    await expect(assertPublicHttpUrl("http://trusted-looking@8.8.8.8/feed.xml")).rejects.toThrow();
+  });
 });

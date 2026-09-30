@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getIronSession } from "iron-session";
-import { sessionOptions, type AdminSessionData } from "@/lib/auth/sessionOptions";
+import { getSessionOptions, type AdminSessionData } from "@/lib/auth/sessionOptions";
 import { clientIp, isRateLimited } from "@/lib/rateLimit";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/consumer/sessionOptions";
 import { hashToken } from "@/lib/auth/consumer/tokens";
@@ -9,12 +9,34 @@ import { resolveSessionUser } from "@/lib/auth/consumer/session";
 const API_RATE_LIMIT = 120; // requests
 const API_RATE_WINDOW_MS = 60_000; // per minute, per IP
 
+// The story page is the single most expensive page render in the app —
+// per-cluster graph/claim-grouping computation (loadStoryIntelligence,
+// loadCoverageComparison) plus a possible AI Story Brief call, all
+// unconditionally recomputed on every request (see ARCHITECTURE.md's
+// Phase 14B note on why full response caching isn't a safe drop-in fix
+// here — entitlement redaction must stay per-viewer). It has no API route
+// of its own to attach a limiter to (it's a server component), so this is
+// enforced at the same middleware layer as the general /api/* limiter
+// above, before the page ever renders. Generous relative to a real reader
+// (Next.js Link prefetching on a category/homepage grid can trigger a
+// short burst of story-page loads for one visitor) while still bounding a
+// scripted flood to a fixed, low multiple of that.
+const STORY_PAGE_RATE_LIMIT = 100;
+const STORY_PAGE_RATE_WINDOW_MS = 60_000;
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (pathname.startsWith("/api/")) {
     const ip = clientIp(request);
     if (isRateLimited(`api:${ip}`, API_RATE_LIMIT, API_RATE_WINDOW_MS)) {
+      return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+    }
+  }
+
+  if (pathname.startsWith("/story/")) {
+    const ip = clientIp(request);
+    if (isRateLimited(`story-page:${ip}`, STORY_PAGE_RATE_LIMIT, STORY_PAGE_RATE_WINDOW_MS)) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
   }
@@ -43,6 +65,19 @@ export async function proxy(request: NextRequest) {
  */
 async function guardAdmin(request: NextRequest) {
   const response = NextResponse.next();
+
+  let sessionOptions;
+  try {
+    sessionOptions = getSessionOptions();
+  } catch {
+    // SESSION_SECRET is missing/invalid in production: fail closed. No
+    // admin session can be created or verified in this state, so there is
+    // nothing to redirect to a login page that couldn't work either — the
+    // response body never includes the underlying error (which never
+    // contains the secret anyway, but stays generic regardless).
+    return NextResponse.json({ error: "Admin authentication is unavailable." }, { status: 500 });
+  }
+
   const session = await getIronSession<AdminSessionData>(request, response, sessionOptions);
 
   if (!session.isAdmin) {
@@ -74,5 +109,5 @@ async function guardAccount(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*", "/api/:path*", "/account/:path*"],
+  matcher: ["/admin/:path*", "/api/:path*", "/account/:path*", "/story/:path*"],
 };

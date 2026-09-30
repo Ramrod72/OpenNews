@@ -16,6 +16,19 @@ import type { ProvenanceExtractionSource } from "@/lib/validation/provenance";
 
 const RETRY_DELAYS_MS = [1000, 3000];
 
+// A real-world RSS/Atom feed almost always contains a bounded number of
+// recent items (commonly a few dozen, rarely more than a couple hundred
+// even for very active publishers). This cap exists purely to bound the
+// WORST case: a malicious or compromised feed origin packing
+// thousands/millions of minimal <item> entries into one response (still
+// well under fetchFeed.ts's own 5MB size cap, since a bare title+link pair
+// is only ~100-150 bytes) would otherwise force one full round of DB
+// writes plus provenance/claim extraction PER item, with no bound at all.
+// 500 is comfortably above any legitimate feed size seen in practice
+// while still bounding a single ingestion run to a fixed, predictable
+// amount of work.
+export const MAX_ITEMS_PER_FETCH = 500;
+
 export interface IngestResult {
   sourceId: string;
   success: boolean;
@@ -103,10 +116,22 @@ async function persistItems(
   // ARCHITECTURE.md's Phase 7 performance notes.
   const aliasIndex = await loadAliasIndex(prisma);
 
+  const totalItems = items.length;
+  const boundedItems =
+    totalItems > MAX_ITEMS_PER_FETCH ? items.slice(0, MAX_ITEMS_PER_FETCH) : items;
+  if (totalItems > MAX_ITEMS_PER_FETCH) {
+    // Deliberately logs only counts, never any item content — a hostile
+    // feed's actual bulk content must never reach a log file.
+    console.warn(
+      `[ingest] ${source.name}: feed contained ${totalItems} items, processing only the ` +
+        `first ${MAX_ITEMS_PER_FETCH}`,
+    );
+  }
+
   let itemsNew = 0;
   let itemsFound = 0;
 
-  for (const item of items) {
+  for (const item of boundedItems) {
     if (!item.link || !item.title) continue;
     itemsFound += 1;
 

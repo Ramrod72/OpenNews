@@ -1641,3 +1641,83 @@ to every admin page that reads live data.
   sits directly next to that toggle.
 - `storyBriefTimeoutMs` remains environment-only; there is no admin UI to
   change it in this release (Phase 13A's own scope decision).
+- **Story page has no response cache; only request-rate protection
+  (Phase 14B).** `/story/[slug]`'s `export const revalidate = 60` has no
+  actual effect — `resolveStoryIntelligenceViewerId()` calls
+  `getCurrentUser()` (a Next.js dynamic API) unconditionally on every
+  visit, which opts the whole route into per-request dynamic rendering
+  and overrides the time-based ISR config entirely. Every visit therefore
+  fully recomputes `loadStoryIntelligence`/`loadCoverageComparison`
+  (graph/claim-grouping work) and potentially calls the AI Story Brief
+  provider. Phase 14B added only a request-rate limit on this path (see
+  the Admin/security section above) rather than a real cache, because a
+  naive full-response cache would be actively unsafe here: the page's
+  content genuinely differs per viewer (Free vs. Basic vs. Pro redaction
+  in Story Intelligence/Coverage Comparison/AI Story Brief), so caching
+  the RENDERED page by URL alone would risk serving one plan's content to
+  another — precisely the bug class the Phase 13 static-rendering fix and
+  this phase's own audit were built to catch, not reintroduce. A real fix
+  would need to split the expensive, viewer-INDEPENDENT computation (e.g.
+  `getClusterOriginSummary`/`buildClaimGroups`'s raw per-cluster results)
+  into its own cache layer (e.g. `unstable_cache` keyed on cluster id +
+  content version), decoupled from the cheap, viewer-DEPENDENT entitlement
+  gating that must still run on every request — a genuine performance
+  project, correctly left as a post-launch optimization rather than
+  something to improvise under this phase's "smallest safe fix" mandate.
+- **SQLite web+worker concurrency investigated and corrected (Phase
+  14B).** `docker-compose.yml` runs `web` and `worker` as two separate
+  processes against one shared SQLite file. Investigation found:
+  `busy_timeout` was already 5000ms by Prisma's own SQLite-connector
+  default (verified empirically by querying `PRAGMA busy_timeout;`
+  against a freshly-migrated DB with no configuration at all) — so brief
+  lock contention between the two processes already waited and retried
+  rather than failing immediately. `journal_mode`, however, defaulted to
+  SQLite's own default (`DELETE`, the classic rollback journal), NOT
+  `WAL` — and a `?journal_mode=WAL` query parameter on `DATABASE_URL` was
+  confirmed to have NO effect on Prisma's SQLite connector (the PRAGMA
+  stayed `delete` either way); journal mode is a property of the database
+  FILE itself, set via an explicit `PRAGMA journal_mode=WAL;` against an
+  open connection, not a per-connection URL setting. In `DELETE` mode, a
+  writer briefly needs an exclusive lock at commit time that blocks a
+  concurrent reader from even starting (and blocks the writer's own
+  commit if a reader is already mid-read) — bounded by the 5s
+  busy_timeout either way, so this was a real but narrow latency/
+  contention risk, not a correctness bug or a data-corruption risk (SQLite's
+  single-writer model prevents corruption regardless of journal mode).
+  Fixed with the smallest safe correction: `scripts/ensure-sqlite-wal.mjs`,
+  a one-time, idempotent script that sets `journal_mode=WAL` (and
+  `busy_timeout=5000` explicitly, rather than relying on an implicit
+  default that could change in a future Prisma version) — wired into
+  `docker/entrypoint.sh` so it runs automatically on every container
+  start, and available as `npm run db:wal` for the bare-metal path (a
+  manual one-time step — see DEPLOYMENT.md). No architectural change, no
+  transaction-pattern change: the existing `$transaction` usage
+  (`reserveOrReuseCheckoutIntent`, `reserveUsage`, ingestion's per-source
+  commit) was independently confirmed adequate for expected MVP
+  concurrency by this same phase's audit.
+- **SSRF guard now re-validates every redirect hop (Phase 14B).**
+  `fetchAndParseFeed` (`src/lib/ingest/fetchFeed.ts`) previously called
+  `assertPublicHttpUrl` once, on the original feed URL, then let Node's
+  `fetch` follow redirects automatically (`redirect: "follow"`) with no
+  further checking — a feed origin that was legitimate at add-time but
+  later returns a redirect to a private/loopback/cloud-metadata address
+  would have been followed with no guard at all. Fixed: redirects are now
+  followed manually (`redirect: "manual"`), and every redirect target is
+  resolved against the current URL and re-validated through the exact
+  same `assertPublicHttpUrl` check (scheme, private-IP ranges, embedded
+  credentials — the credential check is new too, moved from
+  `safeHttpUrl`'s existing pattern into the shared SSRF guard itself so
+  both the initial URL and every redirect target get it) before the next
+  request is made, with the chain capped at 5 hops. **Residual risk (DNS
+  rebinding):** `assertPublicHttpUrl` still resolves DNS itself and checks
+  those addresses, while the actual `fetch()` call re-resolves the
+  hostname independently — a DNS record that answers differently to the
+  two lookups (e.g. via a very low TTL) could still bypass the check.
+  This is unchanged by the Phase 14B redirect fix and remains a narrow,
+  accepted risk: it requires an attacker who already controls (or can
+  rebind) DNS for a domain an admin has chosen to trust as a feed source,
+  a materially harder precondition than the redirect gap this phase
+  closed (an ordinary HTTP 3xx response, reachable by anyone who
+  controls or later compromises an already-trusted feed origin). If feed
+  submission is ever opened to a lower-trust role, this should be
+  revisited (e.g. resolve once and connect to the pinned IP directly).
