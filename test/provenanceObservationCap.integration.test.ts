@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import {
   EXTRACTOR_VERSION,
@@ -311,5 +312,229 @@ describe("Phase 8B adversarial review — L: concurrent calls for the same artic
     const rows = await prisma.provenanceObservation.findMany({ where: { articleId } });
     expect(rows.length).toBeLessThanOrEqual(MAX_OBSERVATIONS_PER_ARTICLE);
     expect(r1.persisted + r2.persisted).toBe(rows.length);
+  });
+});
+
+/**
+ * Transaction-contention remediation (persistObservations.ts switched from
+ * one sequential upsert() per candidate to a single findMany + one batched
+ * createMany per call, both inside the same prisma.$transaction) — mirrors
+ * the identical change and the identical new-failure-mode test coverage in
+ * src/lib/claims/persistClaims.ts / test/claimPersistence.integration.test.ts.
+ */
+
+/** Wraps a real PrismaClient so every interactive transaction's tx.provenanceObservation.{findMany,createMany} calls are counted, without changing their behavior. */
+function withObservationTransactionSpy(basePrisma: typeof prisma) {
+  const calls = { findMany: 0, createMany: 0 };
+  const originalTransaction = basePrisma.$transaction.bind(basePrisma) as (
+    fn: (tx: Prisma.TransactionClient) => Promise<unknown>,
+  ) => Promise<unknown>;
+  const spied = {
+    ...basePrisma,
+    $transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+      originalTransaction((tx) =>
+        fn({
+          ...tx,
+          provenanceObservation: {
+            ...tx.provenanceObservation,
+            findMany: (...args: Parameters<typeof tx.provenanceObservation.findMany>) => {
+              calls.findMany += 1;
+              return tx.provenanceObservation.findMany(...args);
+            },
+            createMany: (...args: Parameters<typeof tx.provenanceObservation.createMany>) => {
+              calls.createMany += 1;
+              return tx.provenanceObservation.createMany(...args);
+            },
+          },
+        }),
+      ),
+  } as unknown as typeof prisma;
+  return { spied, calls };
+}
+
+/** Wraps a real PrismaClient so tx.provenanceObservation.createMany always rejects inside the transaction, to test failure isolation without relying on a contrived real DB constraint violation. */
+function withFailingObservationCreateMany(basePrisma: typeof prisma, error: Error) {
+  const originalTransaction = basePrisma.$transaction.bind(basePrisma) as (
+    fn: (tx: Prisma.TransactionClient) => Promise<unknown>,
+  ) => Promise<unknown>;
+  return {
+    ...basePrisma,
+    $transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+      originalTransaction((tx) =>
+        fn({
+          ...tx,
+          provenanceObservation: {
+            ...tx.provenanceObservation,
+            createMany: () => Promise.reject(error),
+          },
+        }),
+      ),
+  } as unknown as typeof prisma;
+}
+
+describe("Phase 15 remediation — ADMIN_OVERRIDE dedupeKey collision", () => {
+  it("never throws and never overwrites an ADMIN_OVERRIDE row whose dedupeKey matches a freshly re-extracted candidate", async () => {
+    const articleId = await makeArticle();
+    const text = policeSaidFlood(1);
+
+    await persistObservationsForArticle(prisma, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+    const original = await prisma.provenanceObservation.findFirstOrThrow({ where: { articleId } });
+
+    // Simulate an admin manually correcting this exact row (same
+    // dedupeKey — it is never recomputed on update — but different
+    // content) and marking it ADMIN_OVERRIDE.
+    await prisma.provenanceObservation.update({
+      where: { id: original.id },
+      data: { reviewState: "ADMIN_OVERRIDE", rawEntityText: "manually corrected by admin" },
+    });
+
+    // Re-extracting the SAME text produces a candidate with the exact same
+    // dedupeKey as the now-overridden row. A plain createMany would throw
+    // P2002 for the whole batch here if that candidate were ever handed to
+    // it; existingKeys (built from EVERY row, override or not) must filter
+    // it out before the write.
+    const rerun = await persistObservationsForArticle(prisma, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+
+    const rows = await prisma.provenanceObservation.findMany({ where: { articleId } });
+    expect(rows).toHaveLength(1); // no duplicate row, no throw
+    expect(rerun.persisted).toBe(1); // counted as already-persisted via the collision
+    const stillOverridden = await prisma.provenanceObservation.findUnique({
+      where: { id: original.id },
+    });
+    expect(stillOverridden?.reviewState).toBe("ADMIN_OVERRIDE");
+    expect(stillOverridden?.rawEntityText).toBe("manually corrected by admin"); // untouched
+  });
+});
+
+describe("Phase 15 remediation — concurrency across DIFFERENT articles never shares or bleeds budget", () => {
+  it("two concurrent persist calls for two different articles, each over the cap, independently cap at MAX_OBSERVATIONS_PER_ARTICLE", async () => {
+    const articleIdA = await makeArticle();
+    const articleIdB = await makeArticle();
+
+    const [resultA, resultB] = await Promise.all([
+      persistObservationsForArticle(prisma, {
+        articleId: articleIdA,
+        text: policeSaidFlood(25),
+        extractionSource: "FEED_TEXT",
+        publisherName: "Test Provenance Cap Source",
+        aliasIndex,
+      }),
+      persistObservationsForArticle(prisma, {
+        articleId: articleIdB,
+        text: policeSaidFlood(25),
+        extractionSource: "FEED_TEXT",
+        publisherName: "Test Provenance Cap Source",
+        aliasIndex,
+      }),
+    ]);
+
+    const rowsA = await prisma.provenanceObservation.count({ where: { articleId: articleIdA } });
+    const rowsB = await prisma.provenanceObservation.count({ where: { articleId: articleIdB } });
+    // Each article independently reaches the FULL cap — one article's
+    // candidates never consume the other's budget.
+    expect(rowsA).toBe(MAX_OBSERVATIONS_PER_ARTICLE);
+    expect(rowsB).toBe(MAX_OBSERVATIONS_PER_ARTICLE);
+    expect(resultA.cappedByLimit).toBe(5);
+    expect(resultB.cappedByLimit).toBe(5);
+  });
+});
+
+describe("Phase 15 remediation — createMany batch failure is isolated, logged, and leaves no partial/corrupted state", () => {
+  it("a rejected createMany resolves without throwing, writes nothing, and a subsequent real call still persists cleanly", async () => {
+    const articleId = await makeArticle();
+    const text = policeSaidFlood(1);
+    const failing = withFailingObservationCreateMany(prisma, new Error("simulated batch failure"));
+
+    const result = await persistObservationsForArticle(failing, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+    expect(result.persisted).toBe(0);
+    const rowsAfterFailure = await prisma.provenanceObservation.findMany({ where: { articleId } });
+    expect(rowsAfterFailure).toHaveLength(0);
+
+    // No corrupted dedupe state was left behind by the failed attempt — a
+    // normal retry with the real client succeeds exactly as if the first
+    // call had never happened.
+    const retry = await persistObservationsForArticle(prisma, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+    expect(retry.persisted).toBe(1);
+    const rowsAfterRetry = await prisma.provenanceObservation.findMany({ where: { articleId } });
+    expect(rowsAfterRetry).toHaveLength(1);
+  });
+});
+
+describe("Phase 15 remediation — database round-trip count stays O(1) per invocation regardless of candidate count", () => {
+  it("issues exactly one findMany and one createMany whether the call has 3 or 25 candidates", async () => {
+    const articleIdFew = await makeArticle();
+    const { spied: spiedFew, calls: callsFew } = withObservationTransactionSpy(prisma);
+    await persistObservationsForArticle(spiedFew, {
+      articleId: articleIdFew,
+      text: policeSaidFlood(3),
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+    expect(callsFew.findMany).toBe(1);
+    expect(callsFew.createMany).toBe(1);
+
+    const articleIdMany = await makeArticle();
+    const { spied: spiedMany, calls: callsMany } = withObservationTransactionSpy(prisma);
+    await persistObservationsForArticle(spiedMany, {
+      articleId: articleIdMany,
+      text: policeSaidFlood(25),
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+    // Still exactly one round trip each, even though this call writes 20
+    // rows (capped from 25 candidates) instead of 3 — this is what
+    // collapses what used to be up to MAX_OBSERVATIONS_PER_ARTICLE
+    // sequential round trips into one.
+    expect(callsMany.findMany).toBe(1);
+    expect(callsMany.createMany).toBe(1);
+  });
+
+  it("issues zero createMany calls when every candidate already exists (no unnecessary writes on a no-op rerun)", async () => {
+    const articleId = await makeArticle();
+    const text = policeSaidFlood(5);
+    await persistObservationsForArticle(prisma, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+
+    const { spied, calls } = withObservationTransactionSpy(prisma);
+    await persistObservationsForArticle(spied, {
+      articleId,
+      text,
+      extractionSource: "FEED_TEXT",
+      publisherName: "Test Provenance Cap Source",
+      aliasIndex,
+    });
+    expect(calls.findMany).toBe(1);
+    expect(calls.createMany).toBe(0);
   });
 });
