@@ -6,6 +6,7 @@ import {
   isPersistableConfidence,
   type ProvenanceExtractionSource,
 } from "@/lib/validation/provenance";
+import { withWriteQueue } from "@/lib/writeQueue";
 
 /**
  * Bumped whenever extraction logic changes meaningfully (a new pattern,
@@ -132,6 +133,22 @@ export interface PersistObservationsResult {
  * writes are visible. Extraction itself (the pure, non-DB work above) is
  * NOT inside the transaction — only the count-and-write section is —
  * keeping the transaction's own work small.
+ *
+ * The transaction itself is additionally wrapped in `withWriteQueue` (see
+ * src/lib/writeQueue.ts), which serializes it against every other write-
+ * containing operation in this worker process (article creation, keyword
+ * linking, claim persistence, source status writes). This is what keeps
+ * the transaction's own wait time near zero under real concurrent
+ * ingestion (CONCURRENT_FETCHES sources fetched in parallel): without it,
+ * this transaction could have to wait behind several sibling writers'
+ * operations for the SQLite write lock, risking expiry against Prisma's
+ * interactive-transaction timeout (observed in production as P2028) —
+ * the queue does not change this transaction's own atomicity or any
+ * timeout value, it just ensures nothing else is competing for the lock
+ * when this transaction starts, so it reaches the lock immediately. This
+ * function is a "queue-acquiring leaf" per writeQueue.ts's own
+ * non-reentrancy invariant: it must never be called from inside another
+ * queue-acquiring function, and it must never call one itself.
  */
 export async function persistObservationsForArticle(
   prisma: PrismaClient,
@@ -179,104 +196,106 @@ export async function persistObservationsForArticle(
   let persisted = 0;
   let cappedByLimit = 0;
 
-  await prisma.$transaction(async (tx) => {
-    // Selects EVERY existing row for this (articleId, extractorVersion) —
-    // including ADMIN_OVERRIDE ones — unlike the budget count just below,
-    // which still excludes them, exactly as before. This is deliberate: the
-    // old per-row `upsert()` silently no-op'd (via its `update: {}` branch)
-    // if a fresh candidate's dedupeKey ever happened to collide with an
-    // already-existing row regardless of that row's reviewState, including
-    // an ADMIN_OVERRIDE one. A plain `createMany` has no such find-or-create
-    // fallback — attempting to INSERT a dedupeKey that already belongs to an
-    // ADMIN_OVERRIDE row would throw a unique-constraint violation for the
-    // *entire* batch instead of silently skipping just that one candidate.
-    // Treating every existing dedupeKey (override or not) as "already
-    // persisted, do not write" preserves the old no-throw behavior and
-    // never touches an ADMIN_OVERRIDE row's content. Reading this INSIDE
-    // the transaction (rather than before it) is still what closes the
-    // concurrent-call race described above.
-    const existingRows = await tx.provenanceObservation.findMany({
-      where: { articleId: params.articleId, extractorVersion },
-      select: { dedupeKey: true, reviewState: true },
-    });
-    const existingKeys = new Set(existingRows.map((row) => row.dedupeKey));
-    const nonOverrideCount = existingRows.filter(
-      (row) => row.reviewState !== "ADMIN_OVERRIDE",
-    ).length;
-    let budget = Math.max(0, MAX_OBSERVATIONS_PER_ARTICLE - nonOverrideCount);
-
-    // Single pass: decide which candidates are genuinely new (not already
-    // durably persisted, not a repeat of an earlier candidate in THIS same
-    // batch) and within budget, without issuing any database write yet.
-    // Already-persisted/already-queued candidates are counted toward
-    // `persisted` here (matching the old per-row upsert's behavior, where a
-    // no-op re-upsert of an existing row still counted as "persisted") but
-    // never produce a write — this is what collapses the up-to-
-    // MAX_OBSERVATIONS_PER_ARTICLE sequential round trips down to at most
-    // one, the same change applied to src/lib/claims/persistClaims.ts.
-    const seenInBatch = new Set<string>();
-    const rowsToCreate: Array<{
-      articleId: string;
-      entityId: string | null;
-      rawEntityText: string;
-      relationshipType: string;
-      evidenceType: string;
-      confidence: string;
-      evidenceText: string;
-      extractionSource: string;
-      startOffset: number;
-      endOffset: number;
-      extractorVersion: string;
-      dedupeKey: string;
-    }> = [];
-
-    for (const { observation, dedupeKey } of prioritized) {
-      if (existingKeys.has(dedupeKey) || seenInBatch.has(dedupeKey)) {
-        persisted += 1;
-        continue;
-      }
-      if (budget <= 0) {
-        cappedByLimit += 1;
-        continue;
-      }
-      budget -= 1;
-      seenInBatch.add(dedupeKey);
-      rowsToCreate.push({
-        articleId: params.articleId,
-        entityId: observation.resolvedEntity?.entityId ?? null,
-        rawEntityText: observation.rawEntityText,
-        relationshipType: observation.relationshipType,
-        evidenceType: observation.evidenceType,
-        confidence: observation.confidence,
-        evidenceText: observation.evidenceText,
-        extractionSource: params.extractionSource,
-        startOffset: observation.startOffset,
-        endOffset: observation.endOffset,
-        extractorVersion,
-        dedupeKey,
+  await withWriteQueue(() =>
+    prisma.$transaction(async (tx) => {
+      // Selects EVERY existing row for this (articleId, extractorVersion) —
+      // including ADMIN_OVERRIDE ones — unlike the budget count just below,
+      // which still excludes them, exactly as before. This is deliberate: the
+      // old per-row `upsert()` silently no-op'd (via its `update: {}` branch)
+      // if a fresh candidate's dedupeKey ever happened to collide with an
+      // already-existing row regardless of that row's reviewState, including
+      // an ADMIN_OVERRIDE one. A plain `createMany` has no such find-or-create
+      // fallback — attempting to INSERT a dedupeKey that already belongs to an
+      // ADMIN_OVERRIDE row would throw a unique-constraint violation for the
+      // *entire* batch instead of silently skipping just that one candidate.
+      // Treating every existing dedupeKey (override or not) as "already
+      // persisted, do not write" preserves the old no-throw behavior and
+      // never touches an ADMIN_OVERRIDE row's content. Reading this INSIDE
+      // the transaction (rather than before it) is still what closes the
+      // concurrent-call race described above.
+      const existingRows = await tx.provenanceObservation.findMany({
+        where: { articleId: params.articleId, extractorVersion },
+        select: { dedupeKey: true, reviewState: true },
       });
-    }
+      const existingKeys = new Set(existingRows.map((row) => row.dedupeKey));
+      const nonOverrideCount = existingRows.filter(
+        (row) => row.reviewState !== "ADMIN_OVERRIDE",
+      ).length;
+      let budget = Math.max(0, MAX_OBSERVATIONS_PER_ARTICLE - nonOverrideCount);
 
-    // One round trip for the whole batch instead of up to
-    // MAX_OBSERVATIONS_PER_ARTICLE sequential ones — see
-    // src/lib/claims/persistClaims.ts's identical change for the full
-    // reasoning (SQLite single-writer contention under concurrent
-    // ingestion). `skipDuplicates` is intentionally NOT used — empirically
-    // confirmed unsupported by Prisma 6.19.3's SQLite connector — every row
-    // in `rowsToCreate` is already guaranteed collision-free by the
-    // filtering above.
-    if (rowsToCreate.length > 0) {
-      try {
-        const result = await tx.provenanceObservation.createMany({ data: rowsToCreate });
-        persisted += result.count;
-      } catch (err) {
-        console.error(
-          `[provenance] failed to persist a batch of ${rowsToCreate.length} observation(s) for article ${params.articleId} (extractionSource=${params.extractionSource}):`,
-          err,
-        );
+      // Single pass: decide which candidates are genuinely new (not already
+      // durably persisted, not a repeat of an earlier candidate in THIS same
+      // batch) and within budget, without issuing any database write yet.
+      // Already-persisted/already-queued candidates are counted toward
+      // `persisted` here (matching the old per-row upsert's behavior, where a
+      // no-op re-upsert of an existing row still counted as "persisted") but
+      // never produce a write — this is what collapses the up-to-
+      // MAX_OBSERVATIONS_PER_ARTICLE sequential round trips down to at most
+      // one, the same change applied to src/lib/claims/persistClaims.ts.
+      const seenInBatch = new Set<string>();
+      const rowsToCreate: Array<{
+        articleId: string;
+        entityId: string | null;
+        rawEntityText: string;
+        relationshipType: string;
+        evidenceType: string;
+        confidence: string;
+        evidenceText: string;
+        extractionSource: string;
+        startOffset: number;
+        endOffset: number;
+        extractorVersion: string;
+        dedupeKey: string;
+      }> = [];
+
+      for (const { observation, dedupeKey } of prioritized) {
+        if (existingKeys.has(dedupeKey) || seenInBatch.has(dedupeKey)) {
+          persisted += 1;
+          continue;
+        }
+        if (budget <= 0) {
+          cappedByLimit += 1;
+          continue;
+        }
+        budget -= 1;
+        seenInBatch.add(dedupeKey);
+        rowsToCreate.push({
+          articleId: params.articleId,
+          entityId: observation.resolvedEntity?.entityId ?? null,
+          rawEntityText: observation.rawEntityText,
+          relationshipType: observation.relationshipType,
+          evidenceType: observation.evidenceType,
+          confidence: observation.confidence,
+          evidenceText: observation.evidenceText,
+          extractionSource: params.extractionSource,
+          startOffset: observation.startOffset,
+          endOffset: observation.endOffset,
+          extractorVersion,
+          dedupeKey,
+        });
       }
-    }
-  });
+
+      // One round trip for the whole batch instead of up to
+      // MAX_OBSERVATIONS_PER_ARTICLE sequential ones — see
+      // src/lib/claims/persistClaims.ts's identical change for the full
+      // reasoning (SQLite single-writer contention under concurrent
+      // ingestion). `skipDuplicates` is intentionally NOT used — empirically
+      // confirmed unsupported by Prisma 6.19.3's SQLite connector — every row
+      // in `rowsToCreate` is already guaranteed collision-free by the
+      // filtering above.
+      if (rowsToCreate.length > 0) {
+        try {
+          const result = await tx.provenanceObservation.createMany({ data: rowsToCreate });
+          persisted += result.count;
+        } catch (err) {
+          console.error(
+            `[provenance] failed to persist a batch of ${rowsToCreate.length} observation(s) for article ${params.articleId} (extractionSource=${params.extractionSource}):`,
+            err,
+          );
+        }
+      }
+    }),
+  );
 
   return { persisted, discardedLow, cappedByLimit };
 }

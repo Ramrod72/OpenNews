@@ -1,4 +1,4 @@
-import type { Source } from "@prisma/client";
+import type { Prisma, Source } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { safeImageUrl, toPlainText, truncatePlainText } from "@/lib/security/sanitize";
 import { extractImageUrl, fetchAndParseFeed, FeedFetchError, type FeedItem } from "./fetchFeed";
@@ -13,6 +13,7 @@ import type { AliasIndex } from "@/lib/provenance/entityResolution";
 import { persistClaimsForArticle } from "@/lib/claims/persistClaims";
 import type { AttributedStatementSourceObservation } from "@/lib/claims/buildAttributedStatementClaims";
 import type { ProvenanceExtractionSource } from "@/lib/validation/provenance";
+import { withWriteQueue } from "@/lib/writeQueue";
 
 const RETRY_DELAYS_MS = [1000, 3000];
 
@@ -22,6 +23,12 @@ const RETRY_DELAYS_MS = [1000, 3000];
 // queueing from other concurrently-fetching sources (CONCURRENT_FETCHES),
 // not something a multi-second backoff is warranted for.
 const STATUS_WRITE_RETRY_DELAYS_MS = [250, 750];
+
+// Same short-delay shape as STATUS_WRITE_RETRY_DELAYS_MS, for the same
+// reason: this is a single-row insert, not a network call, so any
+// contention it hits is transient write-lock queueing, not something a
+// multi-second backoff is warranted for.
+const ARTICLE_CREATE_RETRY_DELAYS_MS = [250, 750];
 
 // A real-world RSS/Atom feed almost always contains a bounded number of
 // recent items (commonly a few dozen, rarely more than a couple hundred
@@ -93,50 +100,60 @@ export async function ingestSource(source: Source): Promise<IngestResult> {
  * `success: true` already returned to it) must never be retracted or
  * masked by an operational-metadata write failure, and this failure must
  * never propagate out and fail the whole tick for unrelated sources.
+ *
+ * Acquires src/lib/writeQueue.ts's queue ONCE for this whole call,
+ * including every retry attempt — retries happen within that single held
+ * turn rather than releasing and re-acquiring the queue between attempts,
+ * so this operation's own internal retry delays can never be interleaved
+ * with another queued write starting partway through. This function is a
+ * queue-acquiring leaf: it must never be called from inside another
+ * queue-acquiring function, and must never call one itself.
  */
 async function recordSuccessStatus(
   sourceId: string,
   startedAt: Date,
   result: { itemsFound: number; itemsNew: number },
 ): Promise<void> {
-  for (let attempt = 0; attempt <= STATUS_WRITE_RETRY_DELAYS_MS.length; attempt++) {
-    try {
-      await prisma.$transaction([
-        prisma.source.update({
-          where: { id: sourceId },
-          data: {
-            lastFetchedAt: new Date(),
-            lastSuccessAt: new Date(),
-            lastError: null,
-            consecutiveFailures: 0,
-          },
-        }),
-        prisma.feedFetchLog.create({
-          data: {
-            sourceId,
-            startedAt,
-            finishedAt: new Date(),
-            success: true,
-            itemsFound: result.itemsFound,
-            itemsNew: result.itemsNew,
-          },
-        }),
-      ]);
-      return;
-    } catch (err) {
-      const isLastAttempt = attempt === STATUS_WRITE_RETRY_DELAYS_MS.length;
-      if (!isLastAttempt) {
-        await sleep(STATUS_WRITE_RETRY_DELAYS_MS[attempt]);
-        continue;
+  await withWriteQueue(async () => {
+    for (let attempt = 0; attempt <= STATUS_WRITE_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        await prisma.$transaction([
+          prisma.source.update({
+            where: { id: sourceId },
+            data: {
+              lastFetchedAt: new Date(),
+              lastSuccessAt: new Date(),
+              lastError: null,
+              consecutiveFailures: 0,
+            },
+          }),
+          prisma.feedFetchLog.create({
+            data: {
+              sourceId,
+              startedAt,
+              finishedAt: new Date(),
+              success: true,
+              itemsFound: result.itemsFound,
+              itemsNew: result.itemsNew,
+            },
+          }),
+        ]);
+        return;
+      } catch (err) {
+        const isLastAttempt = attempt === STATUS_WRITE_RETRY_DELAYS_MS.length;
+        if (!isLastAttempt) {
+          await sleep(STATUS_WRITE_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+        console.error(
+          `[ingest] source ${sourceId} ingested successfully (${result.itemsNew} new / ` +
+            `${result.itemsFound} found) but failed to record its success status after ` +
+            `${STATUS_WRITE_RETRY_DELAYS_MS.length + 1} attempts:`,
+          err,
+        );
       }
-      console.error(
-        `[ingest] source ${sourceId} ingested successfully (${result.itemsNew} new / ` +
-          `${result.itemsFound} found) but failed to record its success status after ` +
-          `${STATUS_WRITE_RETRY_DELAYS_MS.length + 1} attempts:`,
-        err,
-      );
     }
-  }
+  });
 }
 
 /**
@@ -145,41 +162,104 @@ async function recordSuccessStatus(
  * failure record itself must not propagate uncaught and fail the whole
  * worker tick for unrelated, concurrently-fetching sources (the same
  * isolation guarantee recordSuccessStatus's doc comment describes).
+ *
+ * Also a queue-acquiring leaf — see recordSuccessStatus's doc comment for
+ * the identical reasoning (this one has no retry loop of its own, but is
+ * still wrapped for consistency and because a future retry could be
+ * added here without needing to revisit queue placement).
  */
 async function recordFailureStatus(
   sourceId: string,
   startedAt: Date,
   lastError: string | undefined,
 ): Promise<void> {
-  try {
-    await prisma.$transaction([
-      prisma.source.update({
-        where: { id: sourceId },
-        data: {
-          lastFetchedAt: new Date(),
-          lastErrorAt: new Date(),
-          lastError,
-          consecutiveFailures: { increment: 1 },
-        },
-      }),
-      prisma.feedFetchLog.create({
-        data: {
-          sourceId,
-          startedAt,
-          finishedAt: new Date(),
-          success: false,
-          itemsFound: 0,
-          itemsNew: 0,
-          errorMessage: lastError,
-        },
-      }),
-    ]);
-  } catch (err) {
-    console.error(
-      `[ingest] source ${sourceId} failed, and failed to record its failure status:`,
-      err,
-    );
+  await withWriteQueue(async () => {
+    try {
+      await prisma.$transaction([
+        prisma.source.update({
+          where: { id: sourceId },
+          data: {
+            lastFetchedAt: new Date(),
+            lastErrorAt: new Date(),
+            lastError,
+            consecutiveFailures: { increment: 1 },
+          },
+        }),
+        prisma.feedFetchLog.create({
+          data: {
+            sourceId,
+            startedAt,
+            finishedAt: new Date(),
+            success: false,
+            itemsFound: 0,
+            itemsNew: 0,
+            errorMessage: lastError,
+          },
+        }),
+      ]);
+    } catch (err) {
+      console.error(
+        `[ingest] source ${sourceId} failed, and failed to record its failure status:`,
+        err,
+      );
+    }
+  });
+}
+
+/**
+ * Creates one Article row, retrying a bounded number of times on a
+ * transient "database didn't respond in time" error (`P1008`/`P2024` —
+ * the production P1008 this fixes). Never retries `P2002` (unique
+ * constraint) or any other error — see isRetryableTransientError's own
+ * doc comment for exactly why these two codes and no others.
+ *
+ * Each attempt acquires src/lib/writeQueue.ts's queue separately (unlike
+ * recordSuccessStatus/recordFailureStatus, which hold one turn across all
+ * their retries): releasing the queue during this function's own sleep
+ * delay lets other queued sources' writes proceed instead of waiting out
+ * this one's backoff, and nothing about this function's own correctness
+ * depends on holding the queue between attempts. This function is a
+ * queue-acquiring leaf: it must never be called from inside another
+ * queue-acquiring function, and must never call one itself.
+ *
+ * Idempotency / lost-acknowledgment handling: if an EARLIER attempt in
+ * this same call already saw a P1008/P2024 (meaning Prisma never
+ * confirmed whether that attempt's INSERT actually committed) and a
+ * SUBSEQUENT attempt then hits P2002 on the same urlHash, that row is
+ * almost certainly the one OUR OWN earlier attempt actually created —
+ * the acknowledgment was lost, not the write. Rather than retry again
+ * (which would just hit the same constraint again) or silently drop the
+ * item (losing its keywords/provenance/claims forever, since a future
+ * tick's dedupe-by-urlHash check would see it as already existing and
+ * never reprocess it), this fetches and returns the existing row instead
+ * — a plain read, never queued, since reads don't need write-exclusivity
+ * — so the caller's downstream processing still runs for it. A P2002 on
+ * the very FIRST attempt (no prior timeout) is NOT this case — it's the
+ * ordinary, already-expected "another source raced us to the same
+ * syndicated URL" scenario, and is left for persistItems' own existing
+ * isUniqueConstraintError skip to handle exactly as before.
+ */
+async function createArticleWithRetry(
+  data: Prisma.ArticleUncheckedCreateInput,
+): Promise<{ id: string } & Record<string, unknown>> {
+  let sawTransientFailure = false;
+
+  for (let attempt = 0; attempt <= ARTICLE_CREATE_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await withWriteQueue(() => prisma.article.create({ data }));
+    } catch (err) {
+      if (sawTransientFailure && isUniqueConstraintError(err)) {
+        return await prisma.article.findUniqueOrThrow({ where: { urlHash: data.urlHash } });
+      }
+      if (!isRetryableTransientError(err)) throw err;
+      sawTransientFailure = true;
+      const isLastAttempt = attempt === ARTICLE_CREATE_RETRY_DELAYS_MS.length;
+      if (isLastAttempt) throw err;
+      await sleep(ARTICLE_CREATE_RETRY_DELAYS_MS[attempt]);
+    }
   }
+  // Unreachable — the loop above always returns or throws.
+  throw new Error("unreachable: createArticleWithRetry loop exited without returning or throwing");
 }
 
 async function persistItems(
@@ -237,20 +317,18 @@ async function persistItems(
     const publishedAt = parseDate(item.isoDate || item.pubDate) ?? new Date();
 
     try {
-      const created = await prisma.article.create({
-        data: {
-          sourceId: source.id,
-          url: normalized,
-          urlHash,
-          title,
-          titleNormalized: normalizeTitle(title),
-          excerpt: sanitizedFeedText ? truncatePlainText(sanitizedFeedText) : null,
-          imageUrl: safeImageUrl(extractImageUrl(item)),
-          author: item.creator ? toPlainText(item.creator, 200) : null,
-          categoryId: category?.id,
-          publishedAt,
-          guid: item.guid ?? item.link,
-        },
+      const created = await createArticleWithRetry({
+        sourceId: source.id,
+        url: normalized,
+        urlHash,
+        title,
+        titleNormalized: normalizeTitle(title),
+        excerpt: sanitizedFeedText ? truncatePlainText(sanitizedFeedText) : null,
+        imageUrl: safeImageUrl(extractImageUrl(item)),
+        author: item.creator ? toPlainText(item.creator, 200) : null,
+        categoryId: category?.id,
+        publishedAt,
+        guid: item.guid ?? item.link,
       });
       await linkKeywords(created.id, title);
       itemsNew += 1;
@@ -416,6 +494,14 @@ async function extractAndPersistClaims(
  * defensive paranoia — so a createMany unique-constraint collision here is
  * expected and handled by re-reading rather than treated as a hard error,
  * exactly like persistItems' own article-urlHash race tolerance below.
+ *
+ * The entire write-containing body below (every findMany/createMany round
+ * trip) runs inside one src/lib/writeQueue.ts acquisition — this function
+ * is a queue-acquiring leaf: it must never be called from inside another
+ * queue-acquiring function, and must never call one itself. Kept as the
+ * existing batched round trips (never reintroducing a sequential
+ * per-keyword write loop) — the queue only changes when this already-small
+ * fixed-size batch of writes is allowed to run, not its shape.
  */
 async function linkKeywords(articleId: string, title: string): Promise<void> {
   // Defensive dedupe: extractKeywordPhrases already returns distinct
@@ -426,54 +512,56 @@ async function linkKeywords(articleId: string, title: string): Promise<void> {
   if (phrases.length === 0) return;
 
   try {
-    const existingKeywords = await prisma.keyword.findMany({
-      where: { term: { in: phrases } },
-      select: { id: true, term: true },
-    });
-    const keywordIdByTerm = new Map(existingKeywords.map((k) => [k.term, k.id]));
-
-    const newTerms = phrases.filter((term) => !keywordIdByTerm.has(term));
-    if (newTerms.length > 0) {
-      try {
-        await prisma.keyword.createMany({ data: newTerms.map((term) => ({ term })) });
-      } catch (err) {
-        if (!isUniqueConstraintError(err)) throw err;
-      }
-      // Re-fetch rather than assume createMany's rows map 1:1 to
-      // newTerms — a concurrent ingest from another source may have
-      // already inserted one of these exact terms between the findMany
-      // above and this createMany (and, on a collision, NOTHING in
-      // newTerms was written at all — createMany is all-or-nothing per
-      // batch — so every genuinely-new term among them still needs this
-      // re-fetch to pick up its real id).
-      const refetched = await prisma.keyword.findMany({
-        where: { term: { in: newTerms } },
+    await withWriteQueue(async () => {
+      const existingKeywords = await prisma.keyword.findMany({
+        where: { term: { in: phrases } },
         select: { id: true, term: true },
       });
-      for (const k of refetched) keywordIdByTerm.set(k.term, k.id);
-    }
+      const keywordIdByTerm = new Map(existingKeywords.map((k) => [k.term, k.id]));
 
-    const keywordIds = phrases
-      .map((term) => keywordIdByTerm.get(term))
-      .filter((id): id is string => Boolean(id));
-    if (keywordIds.length === 0) return;
-
-    const existingLinks = await prisma.articleKeyword.findMany({
-      where: { articleId, keywordId: { in: keywordIds } },
-      select: { keywordId: true },
-    });
-    const alreadyLinked = new Set(existingLinks.map((l) => l.keywordId));
-    const newLinks = keywordIds.filter((id) => !alreadyLinked.has(id));
-
-    if (newLinks.length > 0) {
-      try {
-        await prisma.articleKeyword.createMany({
-          data: newLinks.map((keywordId) => ({ articleId, keywordId, weight: 1 })),
+      const newTerms = phrases.filter((term) => !keywordIdByTerm.has(term));
+      if (newTerms.length > 0) {
+        try {
+          await prisma.keyword.createMany({ data: newTerms.map((term) => ({ term })) });
+        } catch (err) {
+          if (!isUniqueConstraintError(err)) throw err;
+        }
+        // Re-fetch rather than assume createMany's rows map 1:1 to
+        // newTerms — a concurrent ingest from another source may have
+        // already inserted one of these exact terms between the findMany
+        // above and this createMany (and, on a collision, NOTHING in
+        // newTerms was written at all — createMany is all-or-nothing per
+        // batch — so every genuinely-new term among them still needs this
+        // re-fetch to pick up its real id).
+        const refetched = await prisma.keyword.findMany({
+          where: { term: { in: newTerms } },
+          select: { id: true, term: true },
         });
-      } catch (err) {
-        if (!isUniqueConstraintError(err)) throw err;
+        for (const k of refetched) keywordIdByTerm.set(k.term, k.id);
       }
-    }
+
+      const keywordIds = phrases
+        .map((term) => keywordIdByTerm.get(term))
+        .filter((id): id is string => Boolean(id));
+      if (keywordIds.length === 0) return;
+
+      const existingLinks = await prisma.articleKeyword.findMany({
+        where: { articleId, keywordId: { in: keywordIds } },
+        select: { keywordId: true },
+      });
+      const alreadyLinked = new Set(existingLinks.map((l) => l.keywordId));
+      const newLinks = keywordIds.filter((id) => !alreadyLinked.has(id));
+
+      if (newLinks.length > 0) {
+        try {
+          await prisma.articleKeyword.createMany({
+            data: newLinks.map((keywordId) => ({ articleId, keywordId, weight: 1 })),
+          });
+        } catch (err) {
+          if (!isUniqueConstraintError(err)) throw err;
+        }
+      }
+    });
   } catch (err) {
     console.error(`[ingest] failed to link keywords for article ${articleId}:`, err);
   }
@@ -487,6 +575,21 @@ function parseDate(value?: string): Date | null {
 
 function isUniqueConstraintError(err: unknown): boolean {
   return Boolean(err && typeof err === "object" && "code" in err && err.code === "P2002");
+}
+
+// P1008 ("Socket timeout" / operation timed out) and P2024 ("Timed out
+// fetching a new connection from the pool") are both purely about *how long
+// this attempt had to wait for SQLite's single writer*, never about the
+// data itself — exactly the transient contention src/lib/writeQueue.ts
+// exists to eliminate going forward, and safe to retry because the
+// operation never started executing (both are pre-execution timeouts).
+// Deliberately NOT included: P2002 (unique constraint — a real, permanent
+// outcome, not a timeout, and retrying it would never succeed) and any
+// other/unknown error (could reflect a genuine data or logic problem that
+// retrying would only mask).
+function isRetryableTransientError(err: unknown): boolean {
+  if (!err || typeof err !== "object" || !("code" in err)) return false;
+  return err.code === "P1008" || err.code === "P2024";
 }
 
 function sleep(ms: number) {
