@@ -308,18 +308,31 @@ export async function persistObservationsForArticle(
  * observation must survive every future reprocessing run. Safe to call
  * unconditionally before persistObservationsForArticle on every backfill
  * pass; a no-op for an article with no stale rows.
+ *
+ * Only called from worker/backfill-provenance.ts, which runs its own
+ * CONCURRENCY=4 mapWithConcurrency over articles — the exact same
+ * in-process write-lock contention shape as live ingestion. This
+ * deleteMany is itself a write statement, so it is wrapped in
+ * src/lib/writeQueue.ts's queue, making it a queue-acquiring leaf (a
+ * sibling of persistObservationsForArticle, never nested inside it — the
+ * backfill script calls this leaf, then separately calls
+ * persistObservationsForArticle, each acquiring and releasing the queue
+ * in turn). Must never be called from inside another queue-acquiring
+ * function, and must never call one itself.
  */
 export async function clearStaleObservations(
   prisma: PrismaClient,
   articleId: string,
   currentExtractorVersion: string = EXTRACTOR_VERSION,
 ): Promise<number> {
-  const result = await prisma.provenanceObservation.deleteMany({
-    where: {
-      articleId,
-      extractorVersion: { not: currentExtractorVersion },
-      reviewState: { not: "ADMIN_OVERRIDE" },
-    },
+  return withWriteQueue(async () => {
+    const result = await prisma.provenanceObservation.deleteMany({
+      where: {
+        articleId,
+        extractorVersion: { not: currentExtractorVersion },
+        reviewState: { not: "ADMIN_OVERRIDE" },
+      },
+    });
+    return result.count;
   });
-  return result.count;
 }

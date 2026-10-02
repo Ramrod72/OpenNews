@@ -41,13 +41,18 @@
  * itself, which can never run because the outer acquisition is still
  * waiting on it). The current, deliberately small set of queue-acquiring
  * "leaf" functions is: persistObservationsForArticle, persistClaimsForArticle,
- * the article-create retry helper, linkKeywords, recordSuccessStatus, and
- * recordFailureStatus (see src/lib/ingest/ingestSource.ts and
- * src/lib/provenance/persistObservations.ts / src/lib/claims/persistClaims.ts).
- * None of these calls any of the others — they are siblings in a
- * sequential chain, never nested. A new write-containing operation should
- * either become its own new leaf, or call an *existing* leaf — never wrap
- * a call to an existing leaf in a *new* acquisition.
+ * clearStaleObservations, clearStaleClaims, the article-create retry
+ * helper, linkKeywords, recordSuccessStatus, and recordFailureStatus (see
+ * src/lib/ingest/ingestSource.ts and src/lib/provenance/
+ * persistObservations.ts / src/lib/claims/persistClaims.ts). None of
+ * these calls any of the others — they are siblings in a sequential
+ * chain, never nested (e.g. worker/backfill-claims.ts and worker/
+ * backfill-provenance.ts each call clearStaleClaims/clearStaleObservations
+ * and then separately call persistClaimsForArticle/
+ * persistObservationsForArticle, one leaf acquisition after another, not
+ * one inside the other). A new write-containing operation should either
+ * become its own new leaf, or call an *existing* leaf — never wrap a call
+ * to an existing leaf in a *new* acquisition.
  */
 
 // The tail of the FIFO chain. Each call to withWriteQueue reads this,

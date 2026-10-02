@@ -175,9 +175,25 @@ describe("createArticleWithRetry via persistItems: bounded retries, never retrie
   }, 10_000);
 });
 
-describe("createArticleWithRetry via persistItems: lost-acknowledgment idempotency", () => {
-  it("recovers the actually-created row on a post-timeout P2002 instead of retrying again or creating a duplicate", async () => {
-    const item = makeItem("lost-ack-recovery");
+describe("createArticleWithRetry via persistItems: post-timeout P2002 always converges on duplicate semantics", () => {
+  /**
+   * Both races below produce the exact same externally-observable P2002
+   * sequence (a retryable transient error, then a P2002 on retry) — and
+   * are therefore handled identically, per createArticleWithRetry's own
+   * doc comment: ownership of the row cannot be proven from inside the
+   * retry loop, so BOTH converge on "duplicate" rather than one being
+   * treated as a successful recovery and the other not. This is a
+   * deliberate correction: an earlier version of this logic assumed any
+   * post-timeout P2002 was this invocation's own lost acknowledgment,
+   * which could — in the competing-source race — cause this invocation to
+   * run its own title/feed-text extraction against an article actually
+   * created (and worded) by a different concurrently-ingesting source,
+   * and double-count itemsNew for a single article across two sources'
+   * results.
+   */
+
+  it("true lost-ack: the insert actually committed, but is now treated as a duplicate (not double-counted, not re-enriched) rather than assumed-recovered", async () => {
+    const item = makeItem("true-lost-ack");
     const urlHash = hashUrl(normalizeUrl(item.link!));
     const original = prisma.article.create.bind(prisma.article);
     let callCount = 0;
@@ -202,11 +218,86 @@ describe("createArticleWithRetry via persistItems: lost-acknowledgment idempoten
     const result = await persistItems(source, [item]);
 
     expect(result.itemsFound).toBe(1);
-    expect(result.itemsNew).toBe(1); // recovered, not dropped
+    // NOT counted as new — ownership can't be proven, so this is treated
+    // exactly like an ordinary pre-existing-duplicate skip, even though
+    // in THIS specific run the row happens to genuinely be this
+    // invocation's own write.
+    expect(result.itemsNew).toBe(0);
     expect(callCount).toBe(2);
 
     // Exactly ONE row exists for this urlHash — no duplicate was created.
     const articles = await prisma.article.findMany({ where: { urlHash } });
     expect(articles).toHaveLength(1);
+
+    // No unsafe enrichment ran for this item — the deferred-enrichment
+    // trade-off this correction accepts for the rare true-lost-ack case.
+    const links = await prisma.articleKeyword.findMany({ where: { articleId: articles[0]!.id } });
+    expect(links).toHaveLength(0);
+  }, 10_000);
+
+  it("competing source: a genuinely different source's own create wins the race during this invocation's released backoff window — never double-counted, never re-enriched with this invocation's own text, no duplicate row", async () => {
+    const item = makeItem("competing-source");
+    const urlHash = hashUrl(normalizeUrl(item.link!));
+    const original = prisma.article.create.bind(prisma.article);
+    let callCount = 0;
+    const competingTitle = "A Different Source's Own Headline For The Same Canonical URL";
+
+    vi.spyOn(prisma.article, "create").mockImplementation((async (
+      args: Parameters<typeof original>[0],
+    ) => {
+      callCount += 1;
+      if (callCount === 1) {
+        // This invocation's own first attempt: a genuine pre-execution
+        // timeout — nothing committed at all (unlike the true-lost-ack
+        // case above, which lets the real insert land here).
+        throw prismaError("P1008", "simulated pre-execution timeout, nothing committed");
+      }
+      if (callCount === 2) {
+        // Simulates a genuinely DIFFERENT concurrently-ingesting source's
+        // own createArticleWithRetry call successfully creating the same
+        // canonical URL during this invocation's released backoff
+        // window — same urlHash, deliberately different title, proving
+        // this invocation's own text is never used to enrich this row.
+        const competingArgs = args as { data: Record<string, unknown> };
+        await original({
+          data: {
+            ...competingArgs.data,
+            title: competingTitle,
+            titleNormalized: competingTitle.toLowerCase(),
+          },
+        } as Parameters<typeof original>[0]);
+        // This invocation's own retry — now hits a GENUINE P2002 from the
+        // row the competing source just created.
+        return original(args);
+      }
+      return original(args);
+    }) as unknown as typeof prisma.article.create);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    // Never counted by this invocation — the competing source's own
+    // ingestion run counts it, not this one.
+    expect(result.itemsNew).toBe(0);
+    expect(callCount).toBe(2);
+
+    // Exactly ONE row exists — no duplicate was created.
+    const articles = await prisma.article.findMany({ where: { urlHash } });
+    expect(articles).toHaveLength(1);
+    // The row's content is the COMPETING source's own, untouched by this
+    // invocation.
+    expect(articles[0]!.title).toBe(competingTitle);
+
+    // This invocation must never have linked keywords, extracted
+    // provenance, or extracted claims against the competing source's row
+    // using this invocation's own title/text.
+    const links = await prisma.articleKeyword.findMany({ where: { articleId: articles[0]!.id } });
+    expect(links).toHaveLength(0);
+    const observations = await prisma.provenanceObservation.findMany({
+      where: { articleId: articles[0]!.id },
+    });
+    expect(observations).toHaveLength(0);
+    const claims = await prisma.claim.findMany({ where: { articleId: articles[0]!.id } });
+    expect(claims).toHaveLength(0);
   }, 10_000);
 });

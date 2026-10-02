@@ -206,6 +206,19 @@ async function recordFailureStatus(
   });
 }
 
+type CreateArticleResult =
+  /** This invocation's own prisma.article.create() call returned successfully. */
+  | { outcome: "created"; article: { id: string } & Record<string, unknown> }
+  /**
+   * A P2002 on urlHash was encountered after an earlier attempt in this
+   * same call already saw a retryable transient error — see the
+   * "ownership cannot be proven" note below. The caller must treat this
+   * exactly like an ordinary pre-existing-duplicate skip: no new-article
+   * counting, no keyword/provenance/claim extraction against `article`
+   * using this invocation's own title/text.
+   */
+  | { outcome: "duplicate"; article: { id: string } & Record<string, unknown> };
+
 /**
  * Creates one Article row, retrying a bounded number of times on a
  * transient "database didn't respond in time" error (`P1008`/`P2024` —
@@ -222,34 +235,52 @@ async function recordFailureStatus(
  * queue-acquiring leaf: it must never be called from inside another
  * queue-acquiring function, and must never call one itself.
  *
- * Idempotency / lost-acknowledgment handling: if an EARLIER attempt in
- * this same call already saw a P1008/P2024 (meaning Prisma never
- * confirmed whether that attempt's INSERT actually committed) and a
- * SUBSEQUENT attempt then hits P2002 on the same urlHash, that row is
- * almost certainly the one OUR OWN earlier attempt actually created —
- * the acknowledgment was lost, not the write. Rather than retry again
- * (which would just hit the same constraint again) or silently drop the
- * item (losing its keywords/provenance/claims forever, since a future
- * tick's dedupe-by-urlHash check would see it as already existing and
- * never reprocess it), this fetches and returns the existing row instead
- * — a plain read, never queued, since reads don't need write-exclusivity
- * — so the caller's downstream processing still runs for it. A P2002 on
- * the very FIRST attempt (no prior timeout) is NOT this case — it's the
- * ordinary, already-expected "another source raced us to the same
- * syndicated URL" scenario, and is left for persistItems' own existing
- * isUniqueConstraintError skip to handle exactly as before.
+ * Ownership cannot be proven on a post-timeout P2002 — a correction to an
+ * earlier version of this function: if an EARLIER attempt in this same
+ * call already saw a P1008/P2024 (meaning Prisma never confirmed whether
+ * that attempt's INSERT actually committed) and a SUBSEQUENT attempt then
+ * hits P2002 on the same urlHash, there are TWO indistinguishable
+ * explanations — (1) our own earlier attempt actually committed and the
+ * acknowledgment was merely lost, or (2) a genuinely different
+ * concurrently-ingesting source (a legitimate race on a shared syndicated
+ * URL, exactly like the ordinary first-attempt-P2002 case below, just
+ * unluckily timed to land during our own retry backoff) created the row
+ * instead. Nothing available here — not the error, not its metadata, not
+ * timing — can tell these apart. Treating (2) as if it were (1) would run
+ * THIS invocation's own title/feed-text extraction against an article
+ * that may have been created with different content by a different
+ * source, and would double-count itemsNew across two sources' results for
+ * what is really one article. Since correctness matters more than
+ * recovering this rare case's enrichment, this now ALWAYS returns
+ * `{ outcome: "duplicate", article }` here rather than assuming success —
+ * the caller skips it exactly like an ordinary pre-existing duplicate,
+ * accepting that in the genuinely-rare TRUE lost-ack case, that one
+ * article's keywords/provenance/claims are deferred (a future backfill
+ * pass could still pick it up) rather than risking contamination. A P2002
+ * on the very FIRST attempt (no prior timeout) is NOT this ambiguous case
+ * — it's the ordinary, already-expected "another source raced us to the
+ * same syndicated URL" scenario, and is left for persistItems' own
+ * existing isUniqueConstraintError skip to handle exactly as before (this
+ * function still throws for that case, unchanged).
  */
 async function createArticleWithRetry(
   data: Prisma.ArticleUncheckedCreateInput,
-): Promise<{ id: string } & Record<string, unknown>> {
+): Promise<CreateArticleResult> {
   let sawTransientFailure = false;
 
   for (let attempt = 0; attempt <= ARTICLE_CREATE_RETRY_DELAYS_MS.length; attempt++) {
     try {
-      return await withWriteQueue(() => prisma.article.create({ data }));
+      const article = await withWriteQueue(() => prisma.article.create({ data }));
+      return { outcome: "created", article };
     } catch (err) {
       if (sawTransientFailure && isUniqueConstraintError(err)) {
-        return await prisma.article.findUniqueOrThrow({ where: { urlHash: data.urlHash } });
+        // A plain read, never queued, since reads don't need
+        // write-exclusivity — see the doc comment above for why this is
+        // tagged "duplicate" rather than assumed to be our own row.
+        const article = await prisma.article.findUniqueOrThrow({
+          where: { urlHash: data.urlHash },
+        });
+        return { outcome: "duplicate", article };
       }
       if (!isRetryableTransientError(err)) throw err;
       sawTransientFailure = true;
@@ -317,7 +348,7 @@ async function persistItems(
     const publishedAt = parseDate(item.isoDate || item.pubDate) ?? new Date();
 
     try {
-      const created = await createArticleWithRetry({
+      const createResult = await createArticleWithRetry({
         sourceId: source.id,
         url: normalized,
         urlHash,
@@ -330,6 +361,15 @@ async function persistItems(
         publishedAt,
         guid: item.guid ?? item.link,
       });
+      if (createResult.outcome === "duplicate") {
+        // Ownership of the existing row cannot be proven (see
+        // createArticleWithRetry's doc comment) — treat it exactly like
+        // an ordinary pre-existing-duplicate skip: no itemsNew increment,
+        // no keyword/provenance/claim extraction against a row that may
+        // belong to a different source's own concurrent create.
+        continue;
+      }
+      const created = createResult.article;
       await linkKeywords(created.id, title);
       itemsNew += 1;
       // Runs AFTER the Article row exists and AFTER itemsNew is counted —

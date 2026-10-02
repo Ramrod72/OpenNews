@@ -332,18 +332,31 @@ export async function persistClaimsForArticle(
  * reprocessing it — any row at a DIFFERENT claimExtractorVersion than the
  * one about to be (re)written. Never deletes an ADMIN_OVERRIDE row,
  * regardless of its version. Mirrors clearStaleObservations exactly.
+ *
+ * Only called from worker/backfill-claims.ts, which runs its own
+ * CONCURRENCY=4 mapWithConcurrency over articles — the exact same
+ * in-process write-lock contention shape as live ingestion. This
+ * deleteMany is itself a write statement, so it is wrapped in
+ * src/lib/writeQueue.ts's queue, making it a queue-acquiring leaf (a
+ * sibling of persistClaimsForArticle, never nested inside it — the
+ * backfill script calls this leaf, then separately calls
+ * persistClaimsForArticle, each acquiring and releasing the queue in
+ * turn). Must never be called from inside another queue-acquiring
+ * function, and must never call one itself.
  */
 export async function clearStaleClaims(
   prisma: PrismaClient,
   articleId: string,
   currentClaimExtractorVersion: string = CLAIM_EXTRACTOR_VERSION,
 ): Promise<number> {
-  const result = await prisma.claim.deleteMany({
-    where: {
-      articleId,
-      claimExtractorVersion: { not: currentClaimExtractorVersion },
-      reviewState: { not: "ADMIN_OVERRIDE" },
-    },
+  return withWriteQueue(async () => {
+    const result = await prisma.claim.deleteMany({
+      where: {
+        articleId,
+        claimExtractorVersion: { not: currentClaimExtractorVersion },
+        reviewState: { not: "ADMIN_OVERRIDE" },
+      },
+    });
+    return result.count;
   });
-  return result.count;
 }
