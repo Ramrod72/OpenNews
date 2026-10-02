@@ -16,6 +16,13 @@ import type { ProvenanceExtractionSource } from "@/lib/validation/provenance";
 
 const RETRY_DELAYS_MS = [1000, 3000];
 
+// Short, few retries for the trailing status write only — this is a tiny
+// 2-row transaction (Source.update + FeedFetchLog.create), not a network
+// fetch, so any contention it hits is purely transient SQLite write-lock
+// queueing from other concurrently-fetching sources (CONCURRENT_FETCHES),
+// not something a multi-second backoff is warranted for.
+const STATUS_WRITE_RETRY_DELAYS_MS = [250, 750];
+
 // A real-world RSS/Atom feed almost always contains a bounded number of
 // recent items (commonly a few dozen, rarely more than a couple hundred
 // even for very active publishers). This cap exists purely to bound the
@@ -43,13 +50,60 @@ export async function ingestSource(source: Source): Promise<IngestResult> {
   let lastError: string | undefined;
 
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    let result: { itemsFound: number; itemsNew: number };
     try {
       const feed = await fetchAndParseFeed(source.url);
-      const result = await persistItems(source, feed.items ?? []);
+      result = await persistItems(source, feed.items ?? []);
+    } catch (err) {
+      // A genuine fetch/parse/persistence failure — retry the whole
+      // attempt (network + items), exactly as before.
+      lastError = err instanceof Error ? err.message : "Unknown error";
+      const isLastAttempt = attempt === RETRY_DELAYS_MS.length;
+      if (!isLastAttempt) {
+        await sleep(RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      break;
+    }
 
+    // Fetch + persistence already succeeded — every article, provenance
+    // observation, and claim from this run is already durably committed.
+    // A failure recording THIS small status transaction (Source.update +
+    // FeedFetchLog.create) must never be treated as an ingestion failure:
+    // doing so previously discarded the real itemsFound/itemsNew counts,
+    // forced a wasted full re-fetch on retry, and could even let an
+    // exhausted-retries write failure propagate uncaught out of this
+    // function — which, via mapWithConcurrency's un-caught Promise.all,
+    // failed the ENTIRE worker tick for every other concurrently-fetching
+    // source too, not just this one — the production P1008 this fixes.
+    await recordSuccessStatus(source.id, startedAt, result);
+    return { sourceId: source.id, success: true, ...result };
+  }
+
+  await recordFailureStatus(source.id, startedAt, lastError);
+  return { sourceId: source.id, success: false, itemsFound: 0, itemsNew: 0, error: lastError };
+}
+
+/**
+ * Records a successful ingestion run's status. Retried a few times on its
+ * own (short delays — this is a 2-row transaction, not a network call) to
+ * absorb transient SQLite write-lock contention from other
+ * concurrently-fetching sources; if it still never lands, the failure is
+ * logged and swallowed rather than thrown — the caller's `result` (and the
+ * `success: true` already returned to it) must never be retracted or
+ * masked by an operational-metadata write failure, and this failure must
+ * never propagate out and fail the whole tick for unrelated sources.
+ */
+async function recordSuccessStatus(
+  sourceId: string,
+  startedAt: Date,
+  result: { itemsFound: number; itemsNew: number },
+): Promise<void> {
+  for (let attempt = 0; attempt <= STATUS_WRITE_RETRY_DELAYS_MS.length; attempt++) {
+    try {
       await prisma.$transaction([
         prisma.source.update({
-          where: { id: source.id },
+          where: { id: sourceId },
           data: {
             lastFetchedAt: new Date(),
             lastSuccessAt: new Date(),
@@ -59,7 +113,7 @@ export async function ingestSource(source: Source): Promise<IngestResult> {
         }),
         prisma.feedFetchLog.create({
           data: {
-            sourceId: source.id,
+            sourceId,
             startedAt,
             finishedAt: new Date(),
             success: true,
@@ -68,42 +122,64 @@ export async function ingestSource(source: Source): Promise<IngestResult> {
           },
         }),
       ]);
-
-      return { sourceId: source.id, success: true, ...result };
+      return;
     } catch (err) {
-      lastError = err instanceof Error ? err.message : "Unknown error";
-      const isLastAttempt = attempt === RETRY_DELAYS_MS.length;
+      const isLastAttempt = attempt === STATUS_WRITE_RETRY_DELAYS_MS.length;
       if (!isLastAttempt) {
-        await sleep(RETRY_DELAYS_MS[attempt]);
+        await sleep(STATUS_WRITE_RETRY_DELAYS_MS[attempt]);
         continue;
       }
+      console.error(
+        `[ingest] source ${sourceId} ingested successfully (${result.itemsNew} new / ` +
+          `${result.itemsFound} found) but failed to record its success status after ` +
+          `${STATUS_WRITE_RETRY_DELAYS_MS.length + 1} attempts:`,
+        err,
+      );
     }
   }
+}
 
-  await prisma.$transaction([
-    prisma.source.update({
-      where: { id: source.id },
-      data: {
-        lastFetchedAt: new Date(),
-        lastErrorAt: new Date(),
-        lastError,
-        consecutiveFailures: { increment: 1 },
-      },
-    }),
-    prisma.feedFetchLog.create({
-      data: {
-        sourceId: source.id,
-        startedAt,
-        finishedAt: new Date(),
-        success: false,
-        itemsFound: 0,
-        itemsNew: 0,
-        errorMessage: lastError,
-      },
-    }),
-  ]);
-
-  return { sourceId: source.id, success: false, itemsFound: 0, itemsNew: 0, error: lastError };
+/**
+ * Records a failed ingestion run's status, after every fetch/persist retry
+ * is exhausted. Never thrown out of this function: a failure writing the
+ * failure record itself must not propagate uncaught and fail the whole
+ * worker tick for unrelated, concurrently-fetching sources (the same
+ * isolation guarantee recordSuccessStatus's doc comment describes).
+ */
+async function recordFailureStatus(
+  sourceId: string,
+  startedAt: Date,
+  lastError: string | undefined,
+): Promise<void> {
+  try {
+    await prisma.$transaction([
+      prisma.source.update({
+        where: { id: sourceId },
+        data: {
+          lastFetchedAt: new Date(),
+          lastErrorAt: new Date(),
+          lastError,
+          consecutiveFailures: { increment: 1 },
+        },
+      }),
+      prisma.feedFetchLog.create({
+        data: {
+          sourceId,
+          startedAt,
+          finishedAt: new Date(),
+          success: false,
+          itemsFound: 0,
+          itemsNew: 0,
+          errorMessage: lastError,
+        },
+      }),
+    ]);
+  } catch (err) {
+    console.error(
+      `[ingest] source ${sourceId} failed, and failed to record its failure status:`,
+      err,
+    );
+  }
 }
 
 async function persistItems(
@@ -322,23 +398,84 @@ async function extractAndPersistClaims(
   }
 }
 
+/**
+ * Links an article to every keyword phrase extracted from its title.
+ * Batched rather than one upsert-pair per phrase (the same pre-filter/
+ * batch pattern persistClaims.ts/persistObservations.ts already
+ * established): a findMany to see which Keyword rows already exist, one
+ * createMany for the genuinely-new ones, then the same shape for
+ * ArticleKeyword links — collapsing what was up to 2 sequential round
+ * trips PER PHRASE (an 8-phrase title could cost 16) down to at most 4
+ * total round trips regardless of phrase count. This is the same class of
+ * write-amplification PR #19 fixed for claim/observation persistence,
+ * just one level up (this is a per-article, not per-call, hot path).
+ *
+ * `Keyword.term` is `@unique` and extraction can legitimately produce the
+ * SAME phrase (e.g. "The White House") from different articles/sources
+ * ingesting concurrently (CONCURRENT_FETCHES) — a genuine race, not just
+ * defensive paranoia — so a createMany unique-constraint collision here is
+ * expected and handled by re-reading rather than treated as a hard error,
+ * exactly like persistItems' own article-urlHash race tolerance below.
+ */
 async function linkKeywords(articleId: string, title: string): Promise<void> {
-  const phrases = extractKeywordPhrases(title);
-  for (const term of phrases) {
-    try {
-      const keyword = await prisma.keyword.upsert({
-        where: { term },
-        create: { term },
-        update: {},
+  // Defensive dedupe: extractKeywordPhrases already returns distinct
+  // phrases, but never trust a single upstream filter alone (the same
+  // principle persistClaims.ts/persistObservations.ts apply to their own
+  // candidate batches).
+  const phrases = Array.from(new Set(extractKeywordPhrases(title)));
+  if (phrases.length === 0) return;
+
+  try {
+    const existingKeywords = await prisma.keyword.findMany({
+      where: { term: { in: phrases } },
+      select: { id: true, term: true },
+    });
+    const keywordIdByTerm = new Map(existingKeywords.map((k) => [k.term, k.id]));
+
+    const newTerms = phrases.filter((term) => !keywordIdByTerm.has(term));
+    if (newTerms.length > 0) {
+      try {
+        await prisma.keyword.createMany({ data: newTerms.map((term) => ({ term })) });
+      } catch (err) {
+        if (!isUniqueConstraintError(err)) throw err;
+      }
+      // Re-fetch rather than assume createMany's rows map 1:1 to
+      // newTerms — a concurrent ingest from another source may have
+      // already inserted one of these exact terms between the findMany
+      // above and this createMany (and, on a collision, NOTHING in
+      // newTerms was written at all — createMany is all-or-nothing per
+      // batch — so every genuinely-new term among them still needs this
+      // re-fetch to pick up its real id).
+      const refetched = await prisma.keyword.findMany({
+        where: { term: { in: newTerms } },
+        select: { id: true, term: true },
       });
-      await prisma.articleKeyword.upsert({
-        where: { articleId_keywordId: { articleId, keywordId: keyword.id } },
-        create: { articleId, keywordId: keyword.id, weight: 1 },
-        update: {},
-      });
-    } catch (err) {
-      console.error(`[ingest] failed to link keyword "${term}":`, err);
+      for (const k of refetched) keywordIdByTerm.set(k.term, k.id);
     }
+
+    const keywordIds = phrases
+      .map((term) => keywordIdByTerm.get(term))
+      .filter((id): id is string => Boolean(id));
+    if (keywordIds.length === 0) return;
+
+    const existingLinks = await prisma.articleKeyword.findMany({
+      where: { articleId, keywordId: { in: keywordIds } },
+      select: { keywordId: true },
+    });
+    const alreadyLinked = new Set(existingLinks.map((l) => l.keywordId));
+    const newLinks = keywordIds.filter((id) => !alreadyLinked.has(id));
+
+    if (newLinks.length > 0) {
+      try {
+        await prisma.articleKeyword.createMany({
+          data: newLinks.map((keywordId) => ({ articleId, keywordId, weight: 1 })),
+        });
+      } catch (err) {
+        if (!isUniqueConstraintError(err)) throw err;
+      }
+    }
+  } catch (err) {
+    console.error(`[ingest] failed to link keywords for article ${articleId}:`, err);
   }
 }
 
@@ -359,3 +496,8 @@ function sleep(ms: number) {
 // Exported for direct integration testing with synthetic FeedItem[] input,
 // bypassing the real network fetch entirely (see test/provenanceIngestion.integration.test.ts).
 export { FeedFetchError, persistItems };
+
+// Exported for direct integration testing of the batched keyword-linking
+// path without needing a full article-creation round trip for every case
+// (see test/linkKeywordsBatching.integration.test.ts).
+export { linkKeywords };

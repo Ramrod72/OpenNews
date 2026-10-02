@@ -51,10 +51,11 @@ COPY scripts ./scripts
 COPY src ./src
 COPY tsconfig.json next.config.ts ./
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
+COPY docker/migrate.sh ./docker/migrate.sh
 # /data is where docker-compose mounts the persistent SQLite volume; create
 # it (owned by the non-root user) so a fresh named volume inherits
 # writable ownership on first mount, instead of defaulting to root.
-RUN chmod +x ./docker/entrypoint.sh \
+RUN chmod +x ./docker/entrypoint.sh ./docker/migrate.sh \
     && mkdir -p /data \
     && chown -R opennews:opennews /app /data
 

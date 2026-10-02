@@ -1,10 +1,34 @@
 name: opennews
 
 services:
+  # One-shot database initialization: applies pending migrations, sets
+  # SQLite to WAL mode, and syncs categories/sources/plans from config/ —
+  # runs to completion exactly once per `docker compose up`, before web or
+  # worker ever touch the database. `web` and `worker` no longer run any of
+  # this themselves (see docker/entrypoint.sh) — doing it from two
+  # processes against the same SQLite file at once previously raced and
+  # could fail with "database is locked" (see docker/migrate.sh's own doc
+  # comment for the full rationale). `restart: "no"` is deliberate: this
+  # container is meant to exit 0 and stay stopped; Compose's
+  # `condition: service_completed_successfully` below is what gates
+  # web/worker on that happening, not a restart policy.
+  migrate:
+    build: .
+    image: opennews:latest
+    restart: "no"
+    entrypoint: ["./docker/migrate.sh"]
+    environment:
+      DATABASE_URL: "file:/data/opennews.db"
+    volumes:
+      - opennews-data:/data
+
   web:
     build: .
     image: opennews:latest
     restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       # Bound to loopback only: this app has no TLS of its own and must
       # never be reached directly from the public Internet in plaintext
@@ -39,6 +63,8 @@ services:
     restart: unless-stopped
     command: ["npx", "tsx", "worker/index.ts"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       web:
         condition: service_healthy
     environment:
