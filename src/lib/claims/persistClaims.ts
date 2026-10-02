@@ -208,51 +208,106 @@ export async function persistClaimsForArticle(
   let cappedByLimit = 0;
 
   await prisma.$transaction(async (tx) => {
+    // Selects EVERY existing row for this (articleId, claimExtractorVersion)
+    // — including ADMIN_OVERRIDE ones — unlike the budget count just below,
+    // which still excludes them. This is deliberate: the old per-row
+    // `upsert()` silently no-op'd (via its `update: {}` branch) if a fresh
+    // candidate's dedupeKey ever happened to collide with an
+    // already-existing row regardless of that row's reviewState, including
+    // an ADMIN_OVERRIDE one. A plain `createMany` has no such find-or-create
+    // fallback — attempting to INSERT a dedupeKey that already belongs to an
+    // ADMIN_OVERRIDE row would throw a unique-constraint violation for the
+    // *entire* batch instead of silently skipping just that one candidate.
+    // Treating every existing dedupeKey (override or not) as "already
+    // persisted, do not write" preserves the old no-throw behavior and
+    // never touches an ADMIN_OVERRIDE row's content — see
+    // test/claimPersistence.integration.test.ts's "ADMIN_OVERRIDE dedupeKey
+    // collision" case.
     const existingRows = await tx.claim.findMany({
-      where: {
-        articleId: params.articleId,
-        claimExtractorVersion,
-        reviewState: { not: "ADMIN_OVERRIDE" },
-      },
-      select: { dedupeKey: true },
+      where: { articleId: params.articleId, claimExtractorVersion },
+      select: { dedupeKey: true, reviewState: true },
     });
     const existingKeys = new Set(existingRows.map((row) => row.dedupeKey));
-    let budget = Math.max(0, MAX_CLAIMS_PER_ARTICLE - existingRows.length);
+    const nonOverrideCount = existingRows.filter(
+      (row) => row.reviewState !== "ADMIN_OVERRIDE",
+    ).length;
+    let budget = Math.max(0, MAX_CLAIMS_PER_ARTICLE - nonOverrideCount);
+
+    // Single pass: decide which candidates are genuinely new (not already
+    // durably persisted, not a repeat of an earlier candidate in THIS same
+    // batch) and within budget, without issuing any database write yet.
+    // Already-persisted/already-queued candidates are counted toward
+    // `persisted` here (matching the old per-row upsert's behavior, where a
+    // no-op re-upsert of an existing row still counted as "persisted") but
+    // never produce a write — this is what collapses the up-to-
+    // MAX_CLAIMS_PER_ARTICLE sequential round trips down to at most one.
+    const seenInBatch = new Set<string>();
+    const rowsToCreate: Array<{
+      articleId: string;
+      kind: PreparedClaim["kind"];
+      rawText: string;
+      normalizedText: string;
+      entityId: string | null;
+      numericValue: number | null;
+      numericUnit: string | null;
+      numericQualifier: string | null;
+      extractionSource: string;
+      startOffset: number;
+      endOffset: number;
+      confidence: PreparedClaim["confidence"];
+      claimExtractorVersion: string;
+      dedupeKey: string;
+    }> = [];
 
     for (const claim of prioritized) {
-      const alreadyPersisted = existingKeys.has(claim.dedupeKey);
-      if (!alreadyPersisted) {
-        if (budget <= 0) {
-          cappedByLimit += 1;
-          continue;
-        }
-        budget -= 1;
-      }
-
-      try {
-        await tx.claim.upsert({
-          where: { dedupeKey: claim.dedupeKey },
-          create: {
-            articleId: params.articleId,
-            kind: claim.kind,
-            rawText: claim.rawText,
-            normalizedText: claim.normalizedText,
-            entityId: claim.entityId,
-            numericValue: claim.numericValue,
-            numericUnit: claim.numericUnit,
-            numericQualifier: claim.numericQualifier,
-            extractionSource: params.extractionSource,
-            startOffset: claim.startOffset,
-            endOffset: claim.endOffset,
-            confidence: claim.confidence,
-            claimExtractorVersion,
-            dedupeKey: claim.dedupeKey,
-          },
-          update: {},
-        });
+      if (existingKeys.has(claim.dedupeKey) || seenInBatch.has(claim.dedupeKey)) {
         persisted += 1;
+        continue;
+      }
+      if (budget <= 0) {
+        cappedByLimit += 1;
+        continue;
+      }
+      budget -= 1;
+      seenInBatch.add(claim.dedupeKey);
+      rowsToCreate.push({
+        articleId: params.articleId,
+        kind: claim.kind,
+        rawText: claim.rawText,
+        normalizedText: claim.normalizedText,
+        entityId: claim.entityId,
+        numericValue: claim.numericValue,
+        numericUnit: claim.numericUnit,
+        numericQualifier: claim.numericQualifier,
+        extractionSource: params.extractionSource,
+        startOffset: claim.startOffset,
+        endOffset: claim.endOffset,
+        confidence: claim.confidence,
+        claimExtractorVersion,
+        dedupeKey: claim.dedupeKey,
+      });
+    }
+
+    // One round trip for the whole batch instead of up to
+    // MAX_CLAIMS_PER_ARTICLE sequential ones — this is what keeps this
+    // interactive transaction short enough to stay well under Prisma's
+    // default 5000ms transaction timeout even under concurrent SQLite
+    // writer contention from other articles being ingested at the same
+    // time (see ARCHITECTURE.md's SQLite concurrency note). `skipDuplicates`
+    // is intentionally NOT used here — empirically confirmed unsupported by
+    // Prisma 6.19.3's SQLite connector (rejected at both the TypeScript and
+    // runtime level) — every row in `rowsToCreate` is already guaranteed
+    // collision-free by the filtering above, so a plain `createMany` is
+    // both correct and the smallest viable fix.
+    if (rowsToCreate.length > 0) {
+      try {
+        const result = await tx.claim.createMany({ data: rowsToCreate });
+        persisted += result.count;
       } catch (err) {
-        console.error(`[claims] failed to persist claim for article ${params.articleId}:`, err);
+        console.error(
+          `[claims] failed to persist a batch of ${rowsToCreate.length} claim(s) for article ${params.articleId} (extractionSource=${params.extractionSource}):`,
+          err,
+        );
       }
     }
   });
