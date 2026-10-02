@@ -2,16 +2,48 @@
 
 ## Docker Compose (recommended)
 
-This is the path exercised by `docker-compose.yml`: two containers built
-from the same image (`web` and `worker`) sharing a named volume for the
-SQLite database file.
+This is the path exercised by `docker-compose.yml`: two long-running
+containers built from the same image (`web` and `worker`) sharing a named
+volume for the SQLite database file, plus a third, one-shot `migrate`
+service that applies migrations, sets SQLite to WAL mode, and seeds
+`config/` — and nothing else — before `web`/`worker` ever touch the
+database.
+
+**`migrate` is intentionally excluded from a bare `docker compose up`** —
+it only runs when explicitly invoked with `--profile init`. This is not
+a style choice: migrate used to be wired in as a `depends_on` of
+`web`/`worker`, and that let Compose re-run it whenever either service
+was brought up or recreated **on its own** (e.g. `docker compose up -d
+--force-recreate worker` after `web` was already live) — racing a
+migration against an already-running process on the same SQLite file and
+failing with `"database is locked"`. The fix is architectural, not a
+reminder to be careful: Compose itself now refuses to start `migrate` as
+a side effect of starting anything else.
+
+**First-time setup** (and after pulling code with new Prisma
+migrations):
 
 ```bash
 cp .env.example .env
 # fill in SESSION_SECRET and ADMIN_PASSWORD_HASH — see README.md Quickstart
-docker compose up --build -d
+docker compose build
+docker compose --profile init run --rm migrate   # applies migrations, sets WAL, seeds config/ — then exits
+docker compose up -d web worker
 docker compose logs -f
 ```
+
+**Restarting/recreating only `worker` (or only `web`)** — the scenario
+that caused the original incident — needs no migrate step at all, and
+must never include one:
+
+```bash
+docker compose up -d --force-recreate worker
+```
+
+This only (re)creates the named service; it will not touch `migrate`,
+and will not race the database. Run the `migrate` step above first ONLY
+when you've actually pulled code with new migrations to apply — not on
+every routine restart.
 
 **Before exposing this to real users, put a reverse proxy in front of it
 and terminate TLS there (required — Phase 14B).** `docker-compose.yml`
@@ -29,8 +61,9 @@ connect (nothing is listening on that interface/port), and
 `https://your-domain.example/` should both succeed and redirect any
 plain `http://` request to `https://`.
 
-- `web` runs `prisma migrate deploy` and seeds `config/` on startup (via
-  `docker/entrypoint.sh`), then `npm start` (Next.js production server).
+- `web`'s own entrypoint (`docker/entrypoint.sh`) does nothing but start
+  `npm start` (Next.js production server) — it never touches migrations;
+  see the `migrate` step above.
 - `worker` waits for `web`'s healthcheck, then runs
   `npx tsx worker/index.ts` — a `node-cron` loop that ingests due feeds and
   re-clusters on the schedule in `WORKER_CRON` (default every 5 minutes;
@@ -39,8 +72,13 @@ plain `http://` request to `https://`.
 - Data persists in the `opennews-data` named volume
   (`docker volume ls` / `docker volume inspect opennews_opennews-data`).
 
-To update after pulling new code: `docker compose up --build -d` again —
-migrations run automatically on the next `web` startup.
+To update after pulling new code:
+
+```bash
+docker compose build
+docker compose --profile init run --rm migrate
+docker compose up -d --force-recreate web worker
+```
 
 ### Backups (SQLite)
 
