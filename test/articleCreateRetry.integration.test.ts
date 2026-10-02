@@ -1,0 +1,303 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { prisma } from "@/lib/db";
+import { persistItems } from "@/lib/ingest/ingestSource";
+import { hashUrl, normalizeUrl } from "@/lib/ingest/normalize";
+import type { Source } from "@prisma/client";
+import type { FeedItem } from "@/lib/ingest/fetchFeed";
+
+/**
+ * Regression coverage for createArticleWithRetry (src/lib/ingest/ingestSource.ts),
+ * added alongside src/lib/writeQueue.ts's worker-write serialization fix.
+ * Exercises the retry policy against the REAL SQLite test database (only
+ * `prisma.article.create` itself is spied on, never mocked away entirely),
+ * so unique-constraint behavior and the lost-acknowledgment recovery path
+ * are genuine, not simulated.
+ */
+
+let categoryId: string;
+let sourceId: string;
+let source: Source;
+let linkCounter = 0;
+
+beforeAll(async () => {
+  const category = await prisma.category.create({
+    data: { slug: "test-article-create-retry", name: "Test Article Create Retry", order: 999 },
+  });
+  categoryId = category.id;
+
+  source = await prisma.source.create({
+    data: {
+      name: "Test Article Create Retry Source",
+      url: "https://article-create-retry-test.example.com/feed.xml",
+      categorySlug: "test-article-create-retry",
+    },
+  });
+  sourceId = source.id;
+});
+
+afterAll(async () => {
+  await prisma.articleKeyword.deleteMany({ where: { article: { categoryId } } });
+  await prisma.article.deleteMany({ where: { categoryId } });
+  await prisma.source.delete({ where: { id: sourceId } });
+  await prisma.category.delete({ where: { id: categoryId } });
+});
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await prisma.articleKeyword.deleteMany({ where: { article: { categoryId } } });
+  await prisma.article.deleteMany({ where: { categoryId } });
+});
+
+function makeItem(suffix: string): FeedItem {
+  linkCounter += 1;
+  return {
+    link: `https://article-create-retry-test.example.com/articles/${suffix}-${linkCounter}`,
+    title: `Article create retry test article ${linkCounter}`,
+    isoDate: new Date().toISOString(),
+  };
+}
+
+function prismaError(code: string, message: string): Error & { code: string } {
+  const err = new Error(message) as Error & { code: string };
+  err.code = code;
+  return err;
+}
+
+/** Spies on the real prisma.article.create, letting each call's behavior be overridden by index (0-based), falling through to the real implementation for any call beyond the supplied overrides. */
+function spyOnArticleCreate(
+  overrides: Array<"P1008" | "P2024" | "P2002" | "UNKNOWN" | "passthrough">,
+) {
+  const original = prisma.article.create.bind(prisma.article);
+  let callCount = 0;
+  const spy = vi.spyOn(prisma.article, "create").mockImplementation(((args: unknown) => {
+    const index = callCount;
+    callCount += 1;
+    const behavior = overrides[index] ?? "passthrough";
+    switch (behavior) {
+      case "P1008":
+        return Promise.reject(prismaError("P1008", "simulated socket timeout"));
+      case "P2024":
+        return Promise.reject(prismaError("P2024", "simulated connection pool timeout"));
+      case "P2002":
+        return Promise.reject(prismaError("P2002", "simulated unique constraint violation"));
+      case "UNKNOWN":
+        return Promise.reject(new Error("simulated unknown failure"));
+      case "passthrough":
+        return (original as (args: unknown) => unknown)(args) as Promise<unknown>;
+    }
+  }) as unknown as typeof prisma.article.create);
+  return { spy, callCount: () => callCount };
+}
+
+describe("createArticleWithRetry via persistItems: transient failures recover", () => {
+  it("retries once and succeeds after a single P1008, persisting exactly one article", async () => {
+    const item = makeItem("p1008-then-success");
+    const { callCount } = spyOnArticleCreate(["P1008", "passthrough"]);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    expect(result.itemsNew).toBe(1);
+    expect(callCount()).toBe(2);
+
+    const article = await prisma.article.findUnique({
+      where: { urlHash: hashUrl(normalizeUrl(item.link!)) },
+    });
+    expect(article).not.toBeNull();
+  }, 10_000);
+
+  it("retries once and succeeds after a single P2024, persisting exactly one article", async () => {
+    const item = makeItem("p2024-then-success");
+    const { callCount } = spyOnArticleCreate(["P2024", "passthrough"]);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    expect(result.itemsNew).toBe(1);
+    expect(callCount()).toBe(2);
+
+    const article = await prisma.article.findUnique({
+      where: { urlHash: hashUrl(normalizeUrl(item.link!)) },
+    });
+    expect(article).not.toBeNull();
+  }, 10_000);
+});
+
+describe("createArticleWithRetry via persistItems: bounded retries, never retries permanent errors", () => {
+  it("exhausts its bounded retries on persistent P1008, makes exactly 3 attempts, and never persists the article", async () => {
+    const item = makeItem("p1008-exhausted");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { callCount } = spyOnArticleCreate(["P1008", "P1008", "P1008"]);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    expect(result.itemsNew).toBe(0); // never counted as new — it was never actually persisted
+    expect(callCount()).toBe(3); // ARTICLE_CREATE_RETRY_DELAYS_MS has 2 entries -> 3 total attempts
+
+    const article = await prisma.article.findUnique({
+      where: { urlHash: hashUrl(normalizeUrl(item.link!)) },
+    });
+    expect(article).toBeNull();
+    expect(consoleErrorSpy).toHaveBeenCalled(); // the exhausted failure IS surfaced, not silently swallowed
+  }, 10_000);
+
+  it("never retries a first-attempt P2002 (ordinary concurrent-source race), leaving it for persistItems' existing dedupe skip", async () => {
+    const item = makeItem("p2002-first-attempt");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { callCount } = spyOnArticleCreate(["P2002"]);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    expect(result.itemsNew).toBe(0);
+    expect(callCount()).toBe(1); // no retry attempt at all
+    // Skipped silently as an ordinary dedupe race — never logged as an error.
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("never retries an unknown/non-Prisma error", async () => {
+    const item = makeItem("unknown-error");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { callCount } = spyOnArticleCreate(["UNKNOWN"]);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    expect(result.itemsNew).toBe(0);
+    expect(callCount()).toBe(1); // no retry attempt at all
+    expect(consoleErrorSpy).toHaveBeenCalled(); // unlike P2002, this IS an unexpected failure worth logging
+
+    const article = await prisma.article.findUnique({
+      where: { urlHash: hashUrl(normalizeUrl(item.link!)) },
+    });
+    expect(article).toBeNull();
+  }, 10_000);
+});
+
+describe("createArticleWithRetry via persistItems: post-timeout P2002 always converges on duplicate semantics", () => {
+  /**
+   * Both races below produce the exact same externally-observable P2002
+   * sequence (a retryable transient error, then a P2002 on retry) — and
+   * are therefore handled identically, per createArticleWithRetry's own
+   * doc comment: ownership of the row cannot be proven from inside the
+   * retry loop, so BOTH converge on "duplicate" rather than one being
+   * treated as a successful recovery and the other not. This is a
+   * deliberate correction: an earlier version of this logic assumed any
+   * post-timeout P2002 was this invocation's own lost acknowledgment,
+   * which could — in the competing-source race — cause this invocation to
+   * run its own title/feed-text extraction against an article actually
+   * created (and worded) by a different concurrently-ingesting source,
+   * and double-count itemsNew for a single article across two sources'
+   * results.
+   */
+
+  it("true lost-ack: the insert actually committed, but is now treated as a duplicate (not double-counted, not re-enriched) rather than assumed-recovered", async () => {
+    const item = makeItem("true-lost-ack");
+    const urlHash = hashUrl(normalizeUrl(item.link!));
+    const original = prisma.article.create.bind(prisma.article);
+    let callCount = 0;
+
+    // First attempt: the INSERT genuinely commits (via the real `original`
+    // call), but the caller is told P1008 anyway — simulating a lost
+    // acknowledgment (Prisma itself never confirmed success in time). The
+    // second attempt then hits the database's OWN real P2002 on the same
+    // urlHash, since the row genuinely already exists — this is never
+    // simulated, it's the actual SQLite unique-constraint violation.
+    vi.spyOn(prisma.article, "create").mockImplementation((async (
+      args: Parameters<typeof original>[0],
+    ) => {
+      callCount += 1;
+      if (callCount === 1) {
+        await original(args);
+        throw prismaError("P1008", "simulated lost acknowledgment");
+      }
+      return original(args);
+    }) as unknown as typeof prisma.article.create);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    // NOT counted as new — ownership can't be proven, so this is treated
+    // exactly like an ordinary pre-existing-duplicate skip, even though
+    // in THIS specific run the row happens to genuinely be this
+    // invocation's own write.
+    expect(result.itemsNew).toBe(0);
+    expect(callCount).toBe(2);
+
+    // Exactly ONE row exists for this urlHash — no duplicate was created.
+    const articles = await prisma.article.findMany({ where: { urlHash } });
+    expect(articles).toHaveLength(1);
+
+    // No unsafe enrichment ran for this item — the deferred-enrichment
+    // trade-off this correction accepts for the rare true-lost-ack case.
+    const links = await prisma.articleKeyword.findMany({ where: { articleId: articles[0]!.id } });
+    expect(links).toHaveLength(0);
+  }, 10_000);
+
+  it("competing source: a genuinely different source's own create wins the race during this invocation's released backoff window — never double-counted, never re-enriched with this invocation's own text, no duplicate row", async () => {
+    const item = makeItem("competing-source");
+    const urlHash = hashUrl(normalizeUrl(item.link!));
+    const original = prisma.article.create.bind(prisma.article);
+    let callCount = 0;
+    const competingTitle = "A Different Source's Own Headline For The Same Canonical URL";
+
+    vi.spyOn(prisma.article, "create").mockImplementation((async (
+      args: Parameters<typeof original>[0],
+    ) => {
+      callCount += 1;
+      if (callCount === 1) {
+        // This invocation's own first attempt: a genuine pre-execution
+        // timeout — nothing committed at all (unlike the true-lost-ack
+        // case above, which lets the real insert land here).
+        throw prismaError("P1008", "simulated pre-execution timeout, nothing committed");
+      }
+      if (callCount === 2) {
+        // Simulates a genuinely DIFFERENT concurrently-ingesting source's
+        // own createArticleWithRetry call successfully creating the same
+        // canonical URL during this invocation's released backoff
+        // window — same urlHash, deliberately different title, proving
+        // this invocation's own text is never used to enrich this row.
+        const competingArgs = args as { data: Record<string, unknown> };
+        await original({
+          data: {
+            ...competingArgs.data,
+            title: competingTitle,
+            titleNormalized: competingTitle.toLowerCase(),
+          },
+        } as Parameters<typeof original>[0]);
+        // This invocation's own retry — now hits a GENUINE P2002 from the
+        // row the competing source just created.
+        return original(args);
+      }
+      return original(args);
+    }) as unknown as typeof prisma.article.create);
+
+    const result = await persistItems(source, [item]);
+
+    expect(result.itemsFound).toBe(1);
+    // Never counted by this invocation — the competing source's own
+    // ingestion run counts it, not this one.
+    expect(result.itemsNew).toBe(0);
+    expect(callCount).toBe(2);
+
+    // Exactly ONE row exists — no duplicate was created.
+    const articles = await prisma.article.findMany({ where: { urlHash } });
+    expect(articles).toHaveLength(1);
+    // The row's content is the COMPETING source's own, untouched by this
+    // invocation.
+    expect(articles[0]!.title).toBe(competingTitle);
+
+    // This invocation must never have linked keywords, extracted
+    // provenance, or extracted claims against the competing source's row
+    // using this invocation's own title/text.
+    const links = await prisma.articleKeyword.findMany({ where: { articleId: articles[0]!.id } });
+    expect(links).toHaveLength(0);
+    const observations = await prisma.provenanceObservation.findMany({
+      where: { articleId: articles[0]!.id },
+    });
+    expect(observations).toHaveLength(0);
+    const claims = await prisma.claim.findMany({ where: { articleId: articles[0]!.id } });
+    expect(claims).toHaveLength(0);
+  }, 10_000);
+});

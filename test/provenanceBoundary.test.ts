@@ -198,7 +198,12 @@ describe("evidence retention stays bounded — no full feed/article text is pers
 
   it("ingestSource.ts only ever passes sanitizedFeedText through truncatePlainText() before storage — never assigns the untruncated variable directly to a field", () => {
     const source = read("src/lib/ingest/ingestSource.ts");
-    const articleCreateBlock = source.match(/prisma\.article\.create\(\{[\s\S]*?\}\);/)?.[0] ?? "";
+    // The article-creation data literal is built at createArticleWithRetry's
+    // call site (src/lib/writeQueue.ts's queue-acquiring retry helper that
+    // wraps the actual prisma.article.create() call) — this is the data
+    // literal that must never contain an unwrapped sanitizedFeedText.
+    const articleCreateBlock = source.match(/createArticleWithRetry\(\{[\s\S]*?\}\);/)?.[0] ?? "";
+    expect(articleCreateBlock).not.toBe("");
     expect(articleCreateBlock).toMatch(/truncatePlainText\(sanitizedFeedText\)/);
     // A bare, unwrapped assignment like `excerpt: sanitizedFeedText,` would
     // store the full untruncated text — the only acceptable appearance is
