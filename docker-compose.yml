@@ -2,17 +2,35 @@ name: opennews
 
 services:
   # One-shot database initialization: applies pending migrations, sets
-  # SQLite to WAL mode, and syncs categories/sources/plans from config/ —
-  # runs to completion exactly once per `docker compose up`, before web or
-  # worker ever touch the database. `web` and `worker` no longer run any of
-  # this themselves (see docker/entrypoint.sh) — doing it from two
-  # processes against the same SQLite file at once previously raced and
-  # could fail with "database is locked" (see docker/migrate.sh's own doc
-  # comment for the full rationale). `restart: "no"` is deliberate: this
-  # container is meant to exit 0 and stay stopped; Compose's
-  # `condition: service_completed_successfully` below is what gates
-  # web/worker on that happening, not a restart policy.
+  # SQLite to WAL mode, and syncs categories/sources/plans from config/.
+  # `web` and `worker` never run any of this themselves (see
+  # docker/entrypoint.sh) — doing it from two processes against the same
+  # SQLite file at once previously raced and could fail with "database is
+  # locked" (see docker/migrate.sh's own doc comment for the full
+  # rationale).
+  #
+  # Deliberately NOT a `depends_on` of web/worker. A one-shot job and a
+  # long-running service answer different questions for Compose:
+  # `depends_on: condition: service_completed_successfully` means "has
+  # this already run to completion in THIS invocation's view of the
+  # project," which is re-evaluated every time Compose brings up a
+  # dependent — including `docker compose up -d --force-recreate worker`
+  # run on its own, long after the original migrate container is gone.
+  # That re-ran migrate concurrently with an already-live `web`, which is
+  # exactly the SQLite single-writer race this fix exists to prevent — see
+  # DEPLOYMENT.md for the full incident and the explicit two-step deploy
+  # procedure this requires instead.
+  #
+  # `profiles: ["init"]` keeps this out of a bare `docker compose up -d`
+  # (whole stack, no service names) or `docker compose up -d <web|worker>`
+  # entirely — it only ever runs when explicitly invoked with
+  # `--profile init`, which is what makes "exactly when intentionally
+  # deploying, never otherwise" a guarantee Compose itself enforces,
+  # rather than something that depends on an operator never running a
+  # bare `up`. `restart: "no"` is deliberate too: this container is meant
+  # to exit 0 and stay stopped, never auto-restarted.
   migrate:
+    profiles: ["init"]
     build: .
     image: opennews:latest
     restart: "no"
@@ -26,9 +44,6 @@ services:
     build: .
     image: opennews:latest
     restart: unless-stopped
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
     ports:
       # Bound to loopback only: this app has no TLS of its own and must
       # never be reached directly from the public Internet in plaintext
@@ -63,8 +78,6 @@ services:
     restart: unless-stopped
     command: ["npx", "tsx", "worker/index.ts"]
     depends_on:
-      migrate:
-        condition: service_completed_successfully
       web:
         condition: service_healthy
     environment:
