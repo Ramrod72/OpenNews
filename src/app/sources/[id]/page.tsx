@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { Building2, Globe } from "lucide-react";
 import {
   getSourceProfile,
+  isSourceProfileIndexable,
   toPublicSourceProfile,
   type PublicAssessment,
 } from "@/lib/sourceProfile";
@@ -14,6 +15,10 @@ import {
   type SourceType,
 } from "@/lib/validation/sourceProfile";
 import { absoluteTime } from "@/lib/format";
+import { getSiteUrl } from "@/lib/siteUrl";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { buildBreadcrumbListJsonLd } from "@/lib/seo/structuredData";
+import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { EmptyState } from "@/components/ui/EmptyState";
 
 export const revalidate = 300;
@@ -26,7 +31,20 @@ export async function generateMetadata({
   const { id } = await params;
   const source = await getSourceProfile(id);
   if (!source) return { title: "Source not found" };
-  return { title: source.name, description: source.description ?? undefined };
+
+  const profile = toPublicSourceProfile(source);
+  const indexable = isSourceProfileIndexable(profile);
+
+  return {
+    title: source.name,
+    description: source.description ?? undefined,
+    alternates: { canonical: `${getSiteUrl()}/sources/${id}` },
+    // A sparse profile (see isSourceProfileIndexable's doc comment) stays
+    // fully reachable to users and still passes link equity on (`follow:
+    // true`) — it's just not advertised as a search result in its
+    // current, near-empty state.
+    robots: indexable ? undefined : { index: false, follow: true },
+  };
 }
 
 function sourceTypeLabel(sourceType: string | null): string | null {
@@ -53,8 +71,25 @@ export default async function SourceProfilePage({ params }: { params: Promise<{ 
     ]);
   }
 
+  const siteUrl = getSiteUrl();
+
   return (
     <div className="mx-auto max-w-3xl">
+      <JsonLd
+        data={buildBreadcrumbListJsonLd([
+          { name: "Home", url: siteUrl },
+          { name: "Sources", url: `${siteUrl}/sources` },
+          { name: profile.name, url: `${siteUrl}/sources/${id}` },
+        ])}
+      />
+      <Breadcrumbs
+        items={[
+          { name: "Home", href: "/" },
+          { name: "Sources", href: "/sources" },
+          { name: profile.name },
+        ]}
+      />
+
       <div className="mb-6 flex items-center gap-4">
         {profile.logoUrl ? (
           <Image

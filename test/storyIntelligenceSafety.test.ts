@@ -102,7 +102,7 @@ describe("Z — no public graph/provenance API was added", () => {
   });
 });
 
-describe("EvidenceDrawer (the one Client Component) never imports the raw graph module", () => {
+describe("EvidenceDrawer never imports the raw graph module", () => {
   it("only imports the safe storyIntelligenceView types, never src/lib/graph/types or getClusterOriginSummary", () => {
     const source = read("src/components/story/EvidenceDrawer.tsx");
     // Strip block/line comments before matching — the file's own doc
@@ -117,9 +117,9 @@ describe("EvidenceDrawer (the one Client Component) never imports the raw graph 
     );
   });
 
-  it('is a Client Component ("use client")', () => {
+  it("is a Server Component — its props never serialize into the client JS bundle at all", () => {
     const source = read("src/components/story/EvidenceDrawer.tsx");
-    expect(source.trimStart().startsWith('"use client";')).toBe(true);
+    expect(source).not.toMatch(/^"use client";/m);
   });
 });
 
@@ -174,11 +174,11 @@ describe("theming — Story Intelligence uses only existing semantic tokens, no 
 });
 
 describe("accessibility — expand/collapse controls are keyboard-operable and labeled", () => {
-  it("EvidenceDrawer's toggle is a real <button> with aria-expanded and aria-controls, not a click-only div", () => {
+  it("EvidenceDrawer's toggle is a native <details>/<summary> disclosure, not a click-only div (keyboard-operable with no extra JS, and its content is present in server-rendered HTML — see test/discoverabilityRendering.integration.test.ts)", () => {
     const source = read("src/components/story/EvidenceDrawer.tsx");
-    expect(source).toMatch(/<button/);
-    expect(source).toMatch(/aria-expanded=\{open\}/);
-    expect(source).toMatch(/aria-controls=\{panelId\}/);
+    expect(source).toMatch(/<details/);
+    expect(source).toMatch(/<summary/);
+    expect(source).not.toMatch(/^"use client";/m);
   });
 
   it("StoryIntelligence uses a real h2 for the section heading (correct heading hierarchy)", () => {

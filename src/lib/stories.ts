@@ -47,6 +47,66 @@ export async function listStoryClusters(options: ListStoriesOptions = {}): Promi
   return { clusters: page, nextCursor: hasMore ? (page[page.length - 1]?.id ?? null) : null };
 }
 
+export interface ListStoriesPageOptions {
+  categorySlug?: string;
+  breakingOnly?: boolean;
+  sourceId?: string;
+  sort?: "latest" | "oldest";
+  page?: number;
+  pageSize?: number;
+}
+
+export interface StoriesPage {
+  clusters: StoryClusterCard[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+/**
+ * Numeric offset/page-number pagination, deliberately separate from
+ * listStoryClusters's cursor-based pagination above (used by `/api/stories`
+ * and the client-side "Load more" enhancement) — a real page count needs a
+ * total row count up front, which a cursor API was never designed to
+ * provide cheaply. Used by /category/[slug] so later pages are reachable
+ * through real, deterministic `?page=N` URLs a crawler can follow, not
+ * only through a client-side fetch.
+ */
+export async function listStoryClustersByPage(
+  options: ListStoriesPageOptions = {},
+): Promise<StoriesPage> {
+  // Defense-in-depth: the only current caller (/category/[slug]) already
+  // sanitizes its page param before calling this, but this function must
+  // never trust that. Number.isSafeInteger rejects NaN, Infinity, non-
+  // integers, and anything beyond Number.MAX_SAFE_INTEGER (e.g. 1e21) —
+  // any of those, or a non-positive value, would otherwise reach the
+  // `(page - 1) * pageSize` arithmetic below and produce a `skip` value
+  // Prisma/SQLite were never meant to receive. Falls back to page 1,
+  // exactly like the route's own invalid-page handling.
+  const rawPage = options.page ?? 1;
+  const page = Number.isSafeInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+  const pageSize = Math.min(options.pageSize ?? 20, 60);
+
+  const where: Prisma.StoryClusterWhereInput = {};
+  if (options.categorySlug) where.category = { slug: options.categorySlug };
+  if (options.breakingOnly) where.breaking = true;
+  if (options.sourceId) where.articles = { some: { sourceId: options.sourceId } };
+
+  const [total, clusters] = await Promise.all([
+    prisma.storyCluster.count({ where }),
+    prisma.storyCluster.findMany({
+      where,
+      include: clusterCardInclude,
+      orderBy: { lastUpdatedAt: options.sort === "oldest" ? "asc" : "desc" },
+      take: pageSize,
+      skip: (page - 1) * pageSize,
+    }),
+  ]);
+
+  return { clusters, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
+}
+
 export async function getStoryClusterBySlug(slug: string): Promise<StoryClusterCard | null> {
   return prisma.storyCluster.findUnique({
     where: { slug },

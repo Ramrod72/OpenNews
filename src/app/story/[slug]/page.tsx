@@ -16,6 +16,10 @@ import {
 import { loadStoryIntelligence, resolveStoryIntelligenceViewerId } from "@/lib/storyIntelligence";
 import { loadCoverageComparison } from "@/lib/coverageComparison";
 import { loadAiStoryBrief } from "@/lib/aiStoryBrief";
+import { getSiteUrl } from "@/lib/siteUrl";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { buildBreadcrumbListJsonLd, buildStoryWebPageJsonLd } from "@/lib/seo/structuredData";
+import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { BreakingBadge, CategoryBadge } from "@/components/ui/CategoryBadge";
 import { BookmarkButton } from "@/components/story/BookmarkButton";
 import { ShareButton } from "@/components/story/ShareButton";
@@ -143,9 +147,39 @@ export default async function StoryPage({ params }: { params: Promise<{ slug: st
     bySource.set(key, [...(bySource.get(key) ?? []), article]);
   }
 
+  const siteUrl = getSiteUrl();
+  const breadcrumbItems = [
+    { name: "Home", href: "/" },
+    ...(cluster.category
+      ? [{ name: cluster.category.name, href: `/category/${cluster.category.slug}` }]
+      : []),
+    { name: cluster.headline },
+  ];
+  const breadcrumbJsonLdItems = [
+    { name: "Home", url: siteUrl },
+    ...(cluster.category
+      ? [{ name: cluster.category.name, url: `${siteUrl}/category/${cluster.category.slug}` }]
+      : []),
+    { name: cluster.headline, url: storyUrl },
+  ];
+  const uniqueSourcesForJsonLd = Array.from(
+    new Map(timeline.map((a) => [a.source.id, a.source])).values(),
+  );
+
   return (
     <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_300px]">
+      <JsonLd
+        data={buildStoryWebPageJsonLd({
+          headline: cluster.headline,
+          description: cluster.summary?.trim() ? cluster.summary : undefined,
+          url: storyUrl,
+          sources: uniqueSourcesForJsonLd,
+          siteUrl,
+        })}
+      />
+      <JsonLd data={buildBreadcrumbListJsonLd(breadcrumbJsonLdItems)} />
       <article>
+        <Breadcrumbs items={breadcrumbItems} />
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {cluster.breaking && <BreakingBadge />}
           {cluster.category && (

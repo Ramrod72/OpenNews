@@ -53,6 +53,29 @@ export interface PublicSourceProfile {
  * counts) — the same "serialize, don't pass the raw Prisma row" pattern
  * used for stories (src/lib/serialize.ts).
  */
+/**
+ * Deterministic, auditable bar for whether a source profile has enough
+ * genuine admin-entered content to be worth indexing publicly — separate
+ * from whether it's *accessible*, which every profile always is regardless
+ * of this result. A freshly-registered feed only ever has a name/URL/
+ * category (set at ingestion time, never by an admin reviewing the
+ * profile) — none of that is "content" in the sense a search result
+ * should promise. The two fields an admin actually writes that make the
+ * page more than a near-empty stub are a free-text description and at
+ * least one external assessment; a profile counts as indexable once
+ * either is present. A profile that doesn't meet this bar is never
+ * hidden, gated, or deleted — it stays fully reachable and usable, just
+ * marked `noindex, follow` (see src/app/sources/[id]/page.tsx's
+ * generateMetadata) and left out of the sitemap, so search engines don't
+ * surface a near-empty page while humans and internal links can still
+ * reach it normally.
+ */
+export function isSourceProfileIndexable(profile: PublicSourceProfile): boolean {
+  const hasDescription = (profile.description?.trim().length ?? 0) > 0;
+  const hasAssessments = profile.assessments.length > 0;
+  return hasDescription || hasAssessments;
+}
+
 export function toPublicSourceProfile(source: SourceWithAssessments): PublicSourceProfile {
   return {
     id: source.id,
