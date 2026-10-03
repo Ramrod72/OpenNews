@@ -22,7 +22,7 @@ export default async function HomePage() {
       <EmptyState
         icon={Inbox}
         title="No stories yet"
-        description="Veriqen hasn't ingested any articles yet. Run the ingestion worker to pull in the configured RSS feeds: `npm run ingest` (one-off) or `npm run worker` (continuous). See DEPLOYMENT.md for running it alongside the web app."
+        description="No stories available right now. Check back soon."
       />
     );
   }
