@@ -95,7 +95,7 @@ export interface CoverageComparisonUnavailable {
 export type CoverageComparisonResult = CoverageComparisonView | CoverageComparisonUnavailable;
 
 const LIMITATIONS_NOTE =
-  "Comparisons are based on the article text available to Veriqen. Older or limited feeds may provide less text for comparison.";
+  "Comparisons are based on the article text available to Veriqen News. Older or limited feeds may provide less text for comparison.";
 
 function safeArticleHref(url: string): string {
   return safeHttpUrl(url) ?? "";

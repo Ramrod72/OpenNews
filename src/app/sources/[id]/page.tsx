@@ -119,8 +119,8 @@ export default async function SourceProfilePage({ params }: { params: Promise<{ 
         <h2 className="mb-1 font-bold">External assessments</h2>
         <p className="mb-4 max-w-2xl text-sm text-foreground-muted">
           These ratings are published by the third-party organizations named below, using each
-          provider&apos;s own methodology. They are not Veriqen&apos;s independent determination,
-          and Veriqen never averages or combines assessments that disagree.
+          provider&apos;s own methodology. They are not Veriqen News&apos;s independent
+          determination, and Veriqen News never averages or combines assessments that disagree.
         </p>
 
         {profile.assessments.length === 0 ? (
@@ -182,7 +182,7 @@ function AssessmentCard({ assessment }: { assessment: PublicAssessment }) {
           ? `Published ${absoluteTime(assessment.assessedAt)}`
           : "Publication date not disclosed"}
         {" · "}
-        Retrieved by Veriqen {absoluteTime(assessment.retrievedAt)}
+        Retrieved by Veriqen News {absoluteTime(assessment.retrievedAt)}
       </p>
 
       {assessment.notes && <p className="mt-2 text-xs text-foreground-muted">{assessment.notes}</p>}

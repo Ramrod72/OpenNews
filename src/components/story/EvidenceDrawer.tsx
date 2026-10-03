@@ -73,8 +73,8 @@ export function EvidenceDrawer({
             <div>
               <h3 className="mb-2 text-sm font-bold">Original reporting</h3>
               <p className="mb-2 text-xs text-foreground-muted">
-                Veriqen detected language associated with original reporting in these articles. This
-                is not an independence or reliability judgment.
+                Veriqen News detected language associated with original reporting in these articles.
+                This is not an independence or reliability judgment.
               </p>
               <ul className="space-y-3">
                 {originalReporting.items.map((item, i) => (

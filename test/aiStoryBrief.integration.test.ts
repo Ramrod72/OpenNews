@@ -136,7 +136,7 @@ function coverageWithOneClaimGroup(): CoverageComparisonView {
     ],
     totalClaimGroupCount: 1,
     headlineComparison: null,
-    limitationsNote: "Comparisons are based on the article text available to Veriqen.",
+    limitationsNote: "Comparisons are based on the article text available to Veriqen News.",
   };
 }
 
@@ -658,7 +658,7 @@ describe("AK/AL — logs never contain the full prompt/data/output content", () 
       .join("\n");
     expect(loggedText).not.toContain("a very distinctive headline xyz123");
     expect(loggedText).not.toContain("12 people were injured");
-    expect(loggedText).not.toContain("Veriqen's AI Story Brief generator"); // system instructions text
+    expect(loggedText).not.toContain("Veriqen News's AI Story Brief generator"); // system instructions text
     errSpy.mockRestore();
   });
 });

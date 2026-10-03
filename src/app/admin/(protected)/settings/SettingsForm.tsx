@@ -53,7 +53,7 @@ export function SettingsForm({
       <section className="rounded-xl border border-border p-4">
         <h2 className="mb-1 font-bold">Advertising</h2>
         <p className="mb-4 text-sm text-foreground-muted">
-          Veriqen doesn&apos;t bundle any ad network. Paste the snippet your provider gives you
+          Veriqen News doesn&apos;t bundle any ad network. Paste the snippet your provider gives you
           (e.g. an AdSense unit) into a slot below and enable it. Ads are always labeled and
           visually separated from editorial content.
         </p>
@@ -131,7 +131,7 @@ export function SettingsForm({
         <h2 className="mb-1 font-bold">AI (optional)</h2>
         <p className="mb-4 text-sm text-foreground-muted">
           Story summaries work without any AI configured (extractive summaries from collected
-          excerpts). Optionally point Veriqen at a self-hosted, Ollama-compatible endpoint for
+          excerpts). Optionally point Veriqen News at a self-hosted, Ollama-compatible endpoint for
           higher-quality summaries — no API key or paid service required.
         </p>
 

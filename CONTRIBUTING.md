@@ -1,4 +1,4 @@
-# Contributing to Veriqen
+# Contributing to Veriqen News
 
 Thanks for considering a contribution! This project aims to stay simple to
 self-host and free of mandatory paid dependencies — please keep that in

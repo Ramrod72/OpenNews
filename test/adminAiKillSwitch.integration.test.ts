@@ -100,7 +100,7 @@ function coverageWithOneClaimGroup(): CoverageComparisonView {
     ],
     totalClaimGroupCount: 1,
     headlineComparison: null,
-    limitationsNote: "Comparisons are based on the article text available to Veriqen.",
+    limitationsNote: "Comparisons are based on the article text available to Veriqen News.",
   };
 }
 const noIntelligence: StoryIntelligenceView = {

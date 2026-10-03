@@ -16,7 +16,7 @@ What you expected to happen instead.
 
 **Environment**
 
-- Veriqen version/commit:
+- Veriqen News version/commit:
 - Deployment method (Docker Compose / manual / other):
 - Database (SQLite / PostgreSQL):
 - Node.js version (if running without Docker):

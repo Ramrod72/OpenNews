@@ -2,7 +2,7 @@
 
 ## Overview
 
-Veriqen is a single Next.js (App Router) application plus one extra
+Veriqen News is a single Next.js (App Router) application plus one extra
 long-running Node process (the **worker**). They share one Prisma-managed
 database.
 
@@ -322,7 +322,7 @@ pure admin configuration (ad network snippets, on/off toggles), the same
 for every eligible viewer, never templated with anything viewer-specific.
 Nothing about a viewer is ever templated into an ad snippet/script before
 injection either. No personal information reaches an ad provider through
-Veriqen.
+Veriqen News.
 
 ## Source profiles and external assessments (Phase 6)
 
@@ -350,10 +350,10 @@ Three deliberately separate concepts, only the first two of which exist yet:
   otherwise synthesizes a single score across providers; `toPublicSourceProfile()`
   and the `/sources/[id]` page both render every assessment as its own
   record, grouped by type, each showing its own provider.
-- **Veriqen article analysis** — article-level framing/language analysis —
+- **Veriqen News article analysis** — article-level framing/language analysis —
   is explicitly **not** built in this phase. Nothing in the schema, API,
-  or UI implies Veriqen has an opinion about a source's bias; assessments
-  are always presented as "provider X says Y," never as Veriqen's own
+  or UI implies Veriqen News has an opinion about a source's bias; assessments
+  are always presented as "provider X says Y," never as Veriqen News's own
   determination.
 
 `sourceType` and `assessmentType` are plain `String` columns validated at
@@ -368,7 +368,7 @@ Media Bias/Fact Check, Ad Fontes, Ground News, or similar) was scraped,
 copied, or seeded anywhere in this phase — the repository contains no
 licensing agreement with any such provider. This phase only builds the
 framework capable of storing an attributed assessment from any provider;
-which provider(s) Veriqen actually licenses and imports data from is a
+which provider(s) Veriqen News actually licenses and imports data from is a
 future decision. Tests and any demonstration data use obviously fictional
 provider names ("Example Rating Institute (fictional test provider)",
 "Sample Media Observatory (fictional test provider)") that cannot be
@@ -408,7 +408,7 @@ content — even though nothing in this app renders these fields via
 
 ## Provenance extraction foundation (Phase 7B)
 
-Veriqen's eventual differentiator is answering "where did this information
+Veriqen News's eventual differentiator is answering "where did this information
 actually come from" — distinguishing an article count from a publisher
 count from an independent-origin count. Phase 7B builds only the
 structured-evidence foundation that later work would need; it does not
@@ -419,7 +419,7 @@ for the exact boundary.
 all additive — no existing column changed): a `ProvenanceEntity` is
 something an article's text cites (Reuters, the FBI, a court, an
 individual, an anonymous-source concept) — deliberately **separate** from
-`Source`, which represents a configured feed Veriqen actively polls. Most
+`Source`, which represents a configured feed Veriqen News actively polls. Most
 entities an article cites (a wire service, a government agency) are never
 configured feeds themselves, and a configured feed is never required to
 have a matching entity. `ProvenanceEntity.relatedSourceId` is an optional,
@@ -883,7 +883,7 @@ rendered — see `storyIntelligenceView.ts`'s translation into "Reporting
 sources," "cited by"/"referenced by" (see below), "Original reporting,"
 and "Sourcing not detected." Nothing here implies independent
 confirmation, verification, or that shared attribution means the same
-dispatch — see the "How Veriqen traces this" disclosure on the page
+dispatch — see the "How Veriqen News traces this" disclosure on the page
 itself for the full, plain-language explanation and limitations.
 
 **Wire service vs. directly-cited source.** A `WIRE_SERVICE`/`NEWS_OUTLET`
@@ -906,7 +906,7 @@ entitlement key, schema change, migration, or public API.
 
 ## Coverage Comparison — "Common assertions across coverage" (Phase 10B)
 
-Phase 10B adds Veriqen's first **deterministic** claim layer: it extracts
+Phase 10B adds Veriqen News's first **deterministic** claim layer: it extracts
 a narrow, closed set of structured assertions from already-ingested
 article text, persists them per-article, and — at query time, per story
 cluster — groups conservatively similar assertions across articles and
@@ -919,7 +919,7 @@ the database.
 appearing in 15 articles is a fact about repetition, not independent
 confirmation — and if 9 of those 15 also cite Reuters, that is a
 _second_, separately-displayed fact, never subtracted from the 15 and
-never combined into an "independence score." Veriqen never concludes
+never combined into an "independence score." Veriqen News never concludes
 truth or falsity, never says "N sources independently confirmed X," never
 treats majority reporting as proof, and never calls an outlet biased or
 lying. This rule is enforced structurally (`buildClaimGroups.ts`'s
@@ -1134,7 +1134,7 @@ confuse heading-hierarchy navigation. Locked terminology throughout:
 "Appears in N articles," "N of these articles cite Reuters" (always as a
 separate sentence from the article count), "Attributed to [organization],"
 "Not detected in the available text" (never "omitted"/"did not
-report"/"hid"). A "How Veriqen compares coverage" `<details>` disclosure
+report"/"hid"). A "How Veriqen News compares coverage" `<details>` disclosure
 states the limitations in plain language, including that "not all
 comparable assertions are written explicitly, so some go undetected."
 
@@ -1148,8 +1148,8 @@ output — it has not been started.
 
 ## AI Story Brief — Pro AI intelligence layer (Phase 11B)
 
-Phase 11B adds Veriqen's first feature that calls a language model at
-request time. Its locked core principle: **AI may explain Veriqen's
+Phase 11B adds Veriqen News's first feature that calls a language model at
+request time. Its locked core principle: **AI may explain Veriqen News's
 structured data. AI must not become a source of truth.** Every other
 design decision in this section follows from that one rule.
 
@@ -1228,7 +1228,7 @@ enforces a timeout. The outbound boundary is an operator-configured fixed
 endpoint (`AdminSetting`/env, same precedent as the old AI config) —
 distinct from, and never altering, the publisher-facing SSRF guard
 (`assertPublicHttpUrl`), which governs a completely different trust
-boundary (fetching feeds Veriqen doesn't control) than this one (calling
+boundary (fetching feeds Veriqen News doesn't control) than this one (calling
 an endpoint the operator themselves configured). Tests use a deterministic
 mock provider (`src/lib/ai/testing/mockProvider.ts`); no test depends on
 a live provider.
@@ -1291,7 +1291,7 @@ Phase 12B connects real commercial billing to the Plan/Entitlement
 architecture Phase 2 already established, without turning Stripe into a
 second, independent source of truth for what a user can do. The locked
 architectural principle: **Stripe decides commercial subscription state;
-Veriqen's existing entitlement system decides product capabilities.**
+Veriqen News's existing entitlement system decides product capabilities.**
 
 **Free-subscription invariant preserved exactly.** Every user — including
 Free — has always had exactly one `Subscription` row (`src/lib/auth/
@@ -1313,7 +1313,7 @@ CLI, or internet access.
 
 **Trusted Price mapping, fail-closed on the unknown.**
 `src/lib/billing/planMapping.ts` is the only place a Stripe Price id maps
-to a Veriqen plan slug, built from `src/lib/billing/config.ts`'s
+to a Veriqen News plan slug, built from `src/lib/billing/config.ts`'s
 env-sourced `STRIPE_BASIC_PRICE_ID`/`STRIPE_PRO_PRICE_ID`. A client may
 request only `"basic"` or `"pro"` (a closed enum,
 `isPaidPlanSlug()`) — never a price id, customer id, or subscription id.
@@ -1353,7 +1353,7 @@ only thing that ever changes `Subscription` state is a verified webhook.
 **Customer Portal handles everything else.** Card updates, cancellation,
 reactivation, invoices, billing history, and **paid-plan switching**
 (Basic↔Pro) are all delegated to Stripe's hosted Customer Portal
-(`POST /api/billing/portal`) — Veriqen builds none of these itself. The
+(`POST /api/billing/portal`) — Veriqen News builds none of these itself. The
 customer id passed to Stripe comes only from the authenticated caller's
 own `User.externalCustomerId` row; there is no parameter anywhere in this
 path a request could use to name a different customer.
@@ -1435,7 +1435,7 @@ absent, survives the migration byte-for-byte, and the new columns/table
 work correctly afterward).
 
 **Privacy.** The only data Stripe ever receives is the user's email (for
-receipts) and an opaque Veriqen user id as `metadata.veriqenUserId` — never
+receipts) and an opaque Veriqen News user id as `metadata.veriqenUserId` — never
 saved stories, browsing history, followed topics, source preferences,
 article history, AI prompts/outputs, or provenance data. Server logs
 carry only reason codes, event ids, and Stripe object ids — never the
@@ -1593,7 +1593,7 @@ to every admin page that reads live data.
   already inert (`resolveSessionUser` rejects them), just not deleted, so
   the table grows unboundedly. A periodic cleanup (cron or a check on
   write) is a natural addition once session volume makes it worth it.
-- A crash between Stripe successfully creating a customer and Veriqen
+- A crash between Stripe successfully creating a customer and Veriqen News
   persisting that customer id to `User.externalCustomerId` leaves a rare
   orphaned Stripe customer with no local record — an accepted, narrow MVP
   tradeoff (Phase 12A's own audit reasoning), not something Phase 12B

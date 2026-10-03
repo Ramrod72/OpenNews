@@ -17,7 +17,7 @@ export function FeatureComparisonTable({
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] border-collapse text-sm">
-        <caption className="sr-only">Feature comparison across Veriqen plans</caption>
+        <caption className="sr-only">Feature comparison across Veriqen News plans</caption>
         <thead>
           <tr className="border-b border-border">
             <th scope="col" className="py-3 pr-4 text-left font-semibold">

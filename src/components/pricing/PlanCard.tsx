@@ -23,7 +23,7 @@ export function PlanCard({
       }`}
     >
       <h2 className="text-xs font-bold tracking-wide text-foreground-muted uppercase">
-        Veriqen {plan.name}
+        Veriqen News {plan.name}
       </h2>
       <p className="mt-2 text-3xl font-extrabold">
         {price}
