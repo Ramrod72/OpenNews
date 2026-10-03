@@ -76,7 +76,16 @@ export interface StoriesPage {
 export async function listStoryClustersByPage(
   options: ListStoriesPageOptions = {},
 ): Promise<StoriesPage> {
-  const page = Math.max(options.page ?? 1, 1);
+  // Defense-in-depth: the only current caller (/category/[slug]) already
+  // sanitizes its page param before calling this, but this function must
+  // never trust that. Number.isSafeInteger rejects NaN, Infinity, non-
+  // integers, and anything beyond Number.MAX_SAFE_INTEGER (e.g. 1e21) —
+  // any of those, or a non-positive value, would otherwise reach the
+  // `(page - 1) * pageSize` arithmetic below and produce a `skip` value
+  // Prisma/SQLite were never meant to receive. Falls back to page 1,
+  // exactly like the route's own invalid-page handling.
+  const rawPage = options.page ?? 1;
+  const page = Number.isSafeInteger(rawPage) && rawPage > 0 ? rawPage : 1;
   const pageSize = Math.min(options.pageSize ?? 20, 60);
 
   const where: Prisma.StoryClusterWhereInput = {};

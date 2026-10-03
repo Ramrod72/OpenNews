@@ -20,9 +20,15 @@ interface CategoryPageProps {
   searchParams: Promise<Record<string, string | undefined>>;
 }
 
-function parsePage(raw: string | undefined): number {
+// Number.isSafeInteger (not isInteger) rejects values beyond
+// Number.MAX_SAFE_INTEGER (e.g. 1e21, 9007199254740992) — those still
+// pass isInteger but can't survive the (page - 1) * pageSize arithmetic
+// below without losing precision or exceeding what Prisma/SQLite accept
+// as a valid offset. Any unsafe/non-positive/non-numeric value falls
+// back to page 1, exactly like every other malformed value already does.
+export function parsePage(raw: string | undefined): number {
   const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : 1;
+  return Number.isSafeInteger(n) && n > 0 ? n : 1;
 }
 
 export async function generateMetadata({

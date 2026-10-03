@@ -14,6 +14,18 @@ import { isSourceProfileIndexable, toPublicSourceProfile } from "@/lib/sourcePro
 const MAX_STORY_URLS = 2000;
 const MAX_SOURCE_URLS = 1000;
 
+// Without this, Next treats sitemap() as a plain static route (no
+// dynamic API usage) and prerenders it ONCE at `next build` — which, in
+// this project's Docker build, runs against an intentionally empty
+// placeholder database (see Dockerfile's DATABASE_URL=file:./build-
+// placeholder.db), permanently freezing every category/source/story URL
+// out of the shipped sitemap. This route segment config makes Next
+// revalidate (re-run this function against the real database) at most
+// once per hour in production, the same ISR pattern every other
+// DB-backed page in this app already uses (see page.tsx, sources/page.tsx,
+// latest/page.tsx, breaking/page.tsx, category/[slug]/page.tsx).
+export const revalidate = 3600;
+
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const siteUrl = getSiteUrl();
 

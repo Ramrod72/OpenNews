@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
 import { getSiteUrl } from "@/lib/siteUrl";
-import sitemap from "@/app/sitemap";
+import sitemap, { revalidate as sitemapRevalidate } from "@/app/sitemap";
 import robots from "@/app/robots";
 
 let categoryId: string;
@@ -65,6 +65,22 @@ afterAll(async () => {
   await prisma.source.deleteMany({ where: { id: { in: [indexableSourceId, sparseSourceId] } } });
   await prisma.category.delete({ where: { id: categoryId } });
   await prisma.$disconnect();
+});
+
+describe("sitemap() route segment config", () => {
+  it("exports a revalidate interval, so this route is never permanently frozen to build-time data", () => {
+    // Without this export, Next treats sitemap() as a plain static route
+    // (no recognized dynamic API usage) and prerenders it once at `next
+    // build` — which, in this project's Docker build, runs against an
+    // intentionally empty placeholder database (DATABASE_URL=file:./
+    // build-placeholder.db). That would permanently exclude every
+    // category/source/story URL from the shipped sitemap. A finite,
+    // positive revalidate value is what makes Next re-run sitemap()
+    // against the real database after the interval elapses.
+    expect(typeof sitemapRevalidate).toBe("number");
+    expect(sitemapRevalidate).toBeGreaterThan(0);
+    expect(Number.isFinite(sitemapRevalidate)).toBe(true);
+  });
 });
 
 describe("sitemap()", () => {
