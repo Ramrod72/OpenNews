@@ -1,24 +1,23 @@
-"use client";
-
-import { useId, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ExternalLink } from "lucide-react";
 import type { OriginalReportingView, ReportingSourceGroupView } from "@/lib/storyIntelligenceView";
 
 /**
- * Phase 9B's only Client Component: the expandable "full reporting-source
- * breakdown" for viewers entitled to it. It receives nothing but the
- * already-safe, already-entitlement-filtered view model built by
- * src/lib/storyIntelligenceView.ts — no ClusterOriginSummary, no
- * observationId/entityId/extractorVersion/confidence enum ever reaches
- * this component or its props (and therefore never serializes into the
- * page's client payload).
+ * The expandable "full reporting-source breakdown" for viewers entitled
+ * to it. It receives nothing but the already-safe, already-entitlement-
+ * filtered view model built by src/lib/storyIntelligenceView.ts — no
+ * ClusterOriginSummary, no observationId/entityId/extractorVersion/
+ * confidence enum ever reaches this component or its props.
  *
- * The outer expand/collapse (this whole breakdown) uses the same
- * aria-expanded/aria-controls button pattern as ShareButton.tsx. Each
- * individual group's article list + evidence uses a native <details>
- * element — no extra state needed, and it's keyboard/screen-reader
- * accessible by default.
+ * A plain Server Component using a native <details>/<summary> — not a
+ * Client Component with useState — specifically so the full breakdown
+ * (including every source profile link and article link inside it) is
+ * present in the server-rendered HTML a crawler receives, not only
+ * mounted into the DOM after a client click. The browser's native
+ * disclosure widget handles collapse/expand, keyboard access, and
+ * screen-reader semantics with no JS at all; collapsed content is still
+ * real DOM the user can expand and a crawler can already see, never
+ * duplicated or hidden text.
  */
 export function EvidenceDrawer({
   reportingSourceGroups,
@@ -27,70 +26,55 @@ export function EvidenceDrawer({
   reportingSourceGroups: ReportingSourceGroupView[];
   originalReporting: OriginalReportingView | null;
 }) {
-  const [open, setOpen] = useState(false);
-  const panelId = useId();
-
   const hasContent =
     reportingSourceGroups.length > 0 || (originalReporting?.items?.length ?? 0) > 0;
   if (!hasContent) return null;
 
   return (
-    <div className="mt-2">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-surface-muted"
-      >
+    <details className="group mt-2">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-surface-muted [&::-webkit-details-marker]:hidden">
         <ChevronDown
           size={15}
-          className={`transition-transform ${open ? "rotate-180" : ""}`}
+          className="shrink-0 transition-transform group-open:rotate-180"
           aria-hidden
         />
-        {open ? "Hide full sourcing breakdown" : "Show full sourcing breakdown"}
-      </button>
+        <span className="group-open:hidden">Show full sourcing breakdown</span>
+        <span className="hidden group-open:inline">Hide full sourcing breakdown</span>
+      </summary>
 
-      {open && (
-        <div
-          id={panelId}
-          role="region"
-          aria-label="Full sourcing breakdown"
-          className="mt-4 space-y-4"
-        >
-          {reportingSourceGroups.length > 0 && (
-            <div>
-              <h3 className="mb-2 text-sm font-bold">Reporting sources</h3>
-              <div className="space-y-2">
-                {reportingSourceGroups.map((group) => (
-                  <ReportingSourceGroupDetails key={group.key} group={group} />
-                ))}
-              </div>
+      <div role="region" aria-label="Full sourcing breakdown" className="mt-4 space-y-4">
+        {reportingSourceGroups.length > 0 && (
+          <div>
+            <h3 className="mb-2 text-sm font-bold">Reporting sources</h3>
+            <div className="space-y-2">
+              {reportingSourceGroups.map((group) => (
+                <ReportingSourceGroupDetails key={group.key} group={group} />
+              ))}
             </div>
-          )}
+          </div>
+        )}
 
-          {originalReporting?.items && originalReporting.items.length > 0 && (
-            <div>
-              <h3 className="mb-2 text-sm font-bold">Original reporting</h3>
-              <p className="mb-2 text-xs text-foreground-muted">
-                Veriqen News detected language associated with original reporting in these articles.
-                This is not an independence or reliability judgment.
+        {originalReporting?.items && originalReporting.items.length > 0 && (
+          <div>
+            <h3 className="mb-2 text-sm font-bold">Original reporting</h3>
+            <p className="mb-2 text-xs text-foreground-muted">
+              Veriqen News detected language associated with original reporting in these articles.
+              This is not an independence or reliability judgment.
+            </p>
+            <ul className="space-y-3">
+              {originalReporting.items.map((item, i) => (
+                <EvidenceEntry key={`${item.articleId}-${i}`} item={item} />
+              ))}
+            </ul>
+            {originalReporting.items.length < originalReporting.count && (
+              <p className="mt-2 text-xs text-foreground-muted italic">
+                Showing {originalReporting.items.length} of {originalReporting.count} articles.
               </p>
-              <ul className="space-y-3">
-                {originalReporting.items.map((item, i) => (
-                  <EvidenceEntry key={`${item.articleId}-${i}`} item={item} />
-                ))}
-              </ul>
-              {originalReporting.items.length < originalReporting.count && (
-                <p className="mt-2 text-xs text-foreground-muted italic">
-                  Showing {originalReporting.items.length} of {originalReporting.count} articles.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+            )}
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 

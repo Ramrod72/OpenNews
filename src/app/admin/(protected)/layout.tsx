@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { LogoutButton } from "./LogoutButton";
 
-export const metadata = { title: "Admin" };
+export const metadata = { title: "Admin", robots: { index: false, follow: false } };
 
 // Auth is enforced in src/middleware.ts, which runs before this layout (or
 // the page underneath it) executes at all — see the comment there for why

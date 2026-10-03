@@ -1,4 +1,12 @@
-export const metadata = { title: "About" };
+import type { Metadata } from "next";
+import { getSiteUrl } from "@/lib/siteUrl";
+
+export const metadata: Metadata = {
+  title: "About",
+  description:
+    "Veriqen News is an open-source news aggregator that clusters public RSS coverage into stories, with source comparisons and provenance tracing — not an editor or publisher of its own.",
+  alternates: { canonical: `${getSiteUrl()}/about` },
+};
 
 export default function AboutPage() {
   return (

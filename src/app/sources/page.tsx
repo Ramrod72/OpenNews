@@ -1,6 +1,19 @@
+import Link from "next/link";
+import type { Metadata } from "next";
 import { listActiveSources, listCategories } from "@/lib/stories";
+import { getSiteUrl } from "@/lib/siteUrl";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { buildBreadcrumbListJsonLd, buildCollectionPageJsonLd } from "@/lib/seo/structuredData";
+import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 
-export const metadata = { title: "Sources" };
+const DESCRIPTION =
+  "The publicly published RSS/Atom feeds Veriqen News aggregates, grouped by section, each linking to its own source profile.";
+
+export const metadata: Metadata = {
+  title: "Sources",
+  description: DESCRIPTION,
+  alternates: { canonical: `${getSiteUrl()}/sources` },
+};
 export const revalidate = 300;
 
 export default async function SourcesPage() {
@@ -13,8 +26,28 @@ export default async function SourcesPage() {
     bySection.set(key, [...(bySection.get(key) ?? []), source]);
   }
 
+  const siteUrl = getSiteUrl();
+  const pageUrl = `${siteUrl}/sources`;
+
   return (
     <div>
+      <JsonLd
+        data={buildCollectionPageJsonLd({
+          name: "Sources",
+          description: DESCRIPTION,
+          url: pageUrl,
+          siteUrl,
+          items: sources.map((s) => ({ name: s.name, url: `${siteUrl}/sources/${s.id}` })),
+        })}
+      />
+      <JsonLd
+        data={buildBreadcrumbListJsonLd([
+          { name: "Home", url: siteUrl },
+          { name: "Sources", url: pageUrl },
+        ])}
+      />
+      <Breadcrumbs items={[{ name: "Home", href: "/" }, { name: "Sources" }]} />
+
       <h1 className="mb-2 text-2xl font-extrabold tracking-tight">Sources</h1>
       <p className="mb-8 max-w-2xl text-sm text-foreground-muted">
         Veriqen News aggregates headlines from the publicly published RSS/Atom feeds below. It links
@@ -30,18 +63,19 @@ export default async function SourcesPage() {
             <h2 className="mb-2 font-bold">{categoryName.get(slug) ?? slug}</h2>
             <ul className="space-y-1.5 text-sm">
               {list.map((s) => (
-                <li key={s.id}>
-                  {s.homepageUrl ? (
+                <li key={s.id} className="flex items-center justify-between gap-3">
+                  <Link href={`/sources/${s.id}`} className="hover:text-accent hover:underline">
+                    {s.name}
+                  </Link>
+                  {s.homepageUrl && (
                     <a
                       href={s.homepageUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="hover:text-accent hover:underline"
+                      className="shrink-0 text-xs text-foreground-muted hover:text-accent hover:underline"
                     >
-                      {s.name}
+                      Visit site
                     </a>
-                  ) : (
-                    s.name
                   )}
                 </li>
               ))}

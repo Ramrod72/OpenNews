@@ -1,15 +1,47 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import { SearchX } from "lucide-react";
 import { searchStories } from "@/lib/search";
 import { listCategories } from "@/lib/stories";
+import { getSiteUrl } from "@/lib/siteUrl";
 import { StoryCard } from "@/components/story/StoryCard";
 import { SearchFilters } from "@/components/story/SearchFilters";
 import { EmptyState } from "@/components/ui/EmptyState";
 
-export const metadata = { title: "Search" };
-
 interface SearchPageProps {
   searchParams: Promise<Record<string, string | undefined>>;
+}
+
+/** Any filter/sort/pagination param turns this into one of unboundedly
+ * many query-permutation URLs — those stay crawlable and shareable, but
+ * are never individually indexed (see generateMetadata below). */
+function hasFilters(params: Record<string, string | undefined>): boolean {
+  return Boolean(
+    params.q ||
+    params.category ||
+    params.source ||
+    params.sort ||
+    params.from ||
+    params.to ||
+    (params.page && params.page !== "1"),
+  );
+}
+
+export async function generateMetadata({ searchParams }: SearchPageProps): Promise<Metadata> {
+  const params = await searchParams;
+  const canonical = `${getSiteUrl()}/search`;
+
+  return {
+    title: params.q ? `Results for "${params.q}"` : "Search",
+    // The bare /search entry point is real, useful content (it shows
+    // recent stories even with no query) and stays indexable; every
+    // filtered/sorted/paginated permutation canonicalizes back to it and
+    // is marked noindex — never indexed as its own near-duplicate page,
+    // while still `follow`-able so crawlers can reach the story pages
+    // linked from any result set.
+    robots: hasFilters(params) ? { index: false, follow: true } : { index: true, follow: true },
+    alternates: { canonical },
+  };
 }
 
 export default async function SearchPage({ searchParams }: SearchPageProps) {

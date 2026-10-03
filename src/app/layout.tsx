@@ -7,6 +7,8 @@ import { Footer } from "@/components/layout/Footer";
 import { AdHeadSnippet } from "@/components/ads/AdHeadSnippet";
 import { AdEligibilityProvider } from "@/components/ads/AdEligibilityProvider";
 import { getSiteUrl } from "@/lib/siteUrl";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { buildOrganizationJsonLd, buildWebSiteJsonLd } from "@/lib/seo/structuredData";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,8 +28,13 @@ export const metadata: Metadata = {
   },
   description:
     "An open-source news aggregator that clusters public RSS coverage into stories, timelines, and source comparisons.",
+  alternates: { canonical: getSiteUrl() },
   openGraph: {
     siteName: "Veriqen News",
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
   },
 };
 
@@ -39,6 +46,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`${geistSans.variable} ${geistMono.variable} h-full overflow-x-hidden antialiased`}
     >
       <body className="flex min-h-full flex-col overflow-x-hidden bg-background text-foreground">
+        <JsonLd data={buildOrganizationJsonLd()} />
+        <JsonLd data={buildWebSiteJsonLd()} />
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

@@ -12,7 +12,7 @@ import { isPaidPlanSlug } from "@/lib/billing/planMapping";
 import { LogoutButton } from "./LogoutButton";
 import { AppearanceSection } from "./AppearanceSection";
 
-export const metadata = { title: "Account" };
+export const metadata = { title: "Account", robots: { index: false, follow: false } };
 
 export default async function AccountPage({
   searchParams,

@@ -1,10 +1,17 @@
+import type { Metadata } from "next";
 import { getCurrentUser } from "@/lib/auth/consumer/getCurrentUser";
 import { getPricingView } from "@/lib/pricing";
 import { getBillingConfig } from "@/lib/billing/config";
+import { getSiteUrl } from "@/lib/siteUrl";
 import { PlanCard } from "@/components/pricing/PlanCard";
 import { FeatureComparisonTable } from "@/components/pricing/FeatureComparisonTable";
 
-export const metadata = { title: "Pricing" };
+export const metadata: Metadata = {
+  title: "Pricing",
+  description:
+    "Compare Veriqen News's Free, Basic, and Pro plans — ad-free reading, saved stories, and deeper coverage-comparison and AI story-brief features.",
+  alternates: { canonical: `${getSiteUrl()}/pricing` },
+};
 
 export default async function PricingPage() {
   const user = await getCurrentUser();
