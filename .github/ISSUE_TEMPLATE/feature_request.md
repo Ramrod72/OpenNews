@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea for Veriqen
+about: Suggest an idea for Veriqen News
 title: "[Feature] "
 labels: enhancement
 ---

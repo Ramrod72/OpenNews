@@ -21,11 +21,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL(getSiteUrl()),
   title: {
-    default: "Veriqen — Open-source news aggregator",
-    template: "%s · Veriqen",
+    default: "Veriqen News — Open-source news aggregator",
+    template: "%s · Veriqen News",
   },
   description:
     "An open-source news aggregator that clusters public RSS coverage into stories, timelines, and source comparisons.",
+  openGraph: {
+    siteName: "Veriqen News",
+  },
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

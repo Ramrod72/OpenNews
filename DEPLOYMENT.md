@@ -138,7 +138,7 @@ Example systemd unit (`/etc/systemd/system/opennews-web.service`):
 
 ```ini
 [Unit]
-Description=Veriqen web
+Description=Veriqen News web
 After=network.target
 
 [Service]
@@ -163,7 +163,7 @@ default, bound to loopback only in `docker-compose.yml` for exactly this
 reason) to terminate TLS. Production traffic must never reach this app
 directly, in plaintext.
 
-**Trusted-proxy / client-IP model (Phase 14B).** Veriqen's every IP-keyed
+**Trusted-proxy / client-IP model (Phase 14B).** Veriqen News's every IP-keyed
 rate limiter (admin login's per-IP bucket, consumer login/registration,
 billing checkout/portal, the general per-route API limiter — all in
 `src/lib/rateLimit.ts`'s `clientIp()`) assumes **exactly one** trusted

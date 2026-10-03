@@ -57,7 +57,9 @@ export function AppearanceSection() {
       <p className="mb-1 text-xs font-semibold tracking-wide text-foreground-muted uppercase">
         Appearance
       </p>
-      <p className="mb-3 text-sm text-foreground-muted">Choose how Veriqen looks on this device.</p>
+      <p className="mb-3 text-sm text-foreground-muted">
+        Choose how Veriqen News looks on this device.
+      </p>
 
       <div
         role="radiogroup"

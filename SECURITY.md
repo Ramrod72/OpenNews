@@ -12,7 +12,7 @@ should get an initial response within a few days.
 
 ## Threat model
 
-Veriqen fetches and displays content from external, untrusted sources
+Veriqen News fetches and displays content from external, untrusted sources
 (RSS/Atom feeds run by third parties). The core security assumption is:
 **everything that comes from a feed is untrusted input**, including
 headlines, excerpts, author names, image URLs, and the feed XML itself.
@@ -34,7 +34,7 @@ What's in scope:
   or external assessments; cross-source tampering (editing/deleting an
   assessment via an id that belongs to a different source); unsafe
   content (HTML/script) stored in admin-entered profile or assessment
-  fields; Veriqen presenting a third party's rating as its own
+  fields; Veriqen News presenting a third party's rating as its own
   determination, or as a source's without disclosing who made it.
 - Provenance extraction (Phase 7B) expanding the SSRF/network attack
   surface; a corrupted/hand-edited alias or observation row degrading into
@@ -352,7 +352,7 @@ never inject the ad network's HTML/script into the DOM for a viewer whose
 plan doesn't allow ads (`can(userId, "ads_enabled")`, the same centralized
 entitlement check used everywhere else — never a hardcoded plan-slug
 comparison), so a paying subscriber's browser never downloads or executes
-third-party ad-provider JavaScript through Veriqen, and the ad network's
+third-party ad-provider JavaScript through Veriqen News, and the ad network's
 own head-loader script (`AdHeadSnippet`) is gated the same way — not just
 the visible per-slot placements. This goes one step further than "never
 executes": `/api/ads/eligibility` withholds the ad configuration itself
@@ -430,8 +430,8 @@ The external-assessment model has no field, computation, or code path that
 combines multiple providers' ratings into a single score — this is a
 deliberate design constraint, not an oversight, since averaging conflicting
 political-lean or credibility ratings would itself misrepresent both
-providers and let Veriqen's presentation imply a false precision or a
-determination Veriqen never made. Every assessment requires a non-empty
+providers and let Veriqen News's presentation imply a false precision or a
+determination Veriqen News never made. Every assessment requires a non-empty
 `provider` at the schema level (`externalAssessmentSchema`), so there is
 no way, even for an admin, to store an anonymous/unattributed rating.
 
@@ -460,7 +460,7 @@ copied into more than one place beyond that snippet), and the fuller
 sanitized feed text a new article's extraction analyzes is discarded
 immediately after use — it is never written to any column, cache, or log
 in a form a later read could recover as a full-text copy of the original
-feed item, so this phase does not expand what publisher content Veriqen
+feed item, so this phase does not expand what publisher content Veriqen News
 retains beyond the ~220-character excerpt it already stored before this
 phase existed.
 
@@ -773,7 +773,7 @@ source file for a list of specifically forbidden affirmative phrasings —
 "N sources independently confirmed," "verified the claim," "corroborated
 the story," "same dispatch," "plagiarized," "did not report," "failed to
 report," and others — while still permitting those same underlying words
-inside a negated disclaimer sentence explaining what Veriqen does _not_
+inside a negated disclaimer sentence explaining what Veriqen News does _not_
 claim (`test/coverageComparisonSafety.test.ts`).
 
 **Copyright/text-display bounds.** Representative claim text and
@@ -1052,7 +1052,7 @@ entitlements resolve correctly with no billing provider or config
 constructed anywhere in the test at all
 (`test/billingPrivacyAndIsolation.integration.test.ts`'s "BA").
 
-_Privacy._ Only an email and an opaque Veriqen user id ever reach the
+_Privacy._ Only an email and an opaque Veriqen News user id ever reach the
 provider's `createCustomer`/Checkout-metadata calls — proven by asserting
 the exact key set on every such call, ruling out any accidental inclusion
 of saved-stories/topics/history data that has no field to travel through

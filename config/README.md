@@ -1,6 +1,6 @@
 # Source & category configuration
 
-This directory is the single place to configure what Veriqen ingests. No
+This directory is the single place to configure what Veriqen News ingests. No
 application code changes are required to add, remove, or re-categorize a
 feed.
 
@@ -35,7 +35,7 @@ Only add feeds that are:
   endpoint the publisher exposes, not a scraped page).
 - Fetched at a reasonable interval that respects the publisher's
   infrastructure (see `fetchIntervalMinutes`).
-- Used in line with the publisher's terms — Veriqen only ever stores the
+- Used in line with the publisher's terms — Veriqen News only ever stores the
   headline, byline, publish time, a short excerpt/description already present
   in the feed, and a link back to the original article. It never fetches or
   stores full article bodies, and never bypasses paywalls, logins, or

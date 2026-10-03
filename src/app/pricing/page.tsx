@@ -31,7 +31,7 @@ export default async function PricingPage() {
             your card anytime from your account page.
           </>
         ) : (
-          <>Veriqen&apos;s subscription billing isn&apos;t enabled on this deployment yet.</>
+          <>Veriqen News&apos;s subscription billing isn&apos;t enabled on this deployment yet.</>
         )}{" "}
         Features tagged <strong className="font-semibold text-foreground">Coming soon</strong>{" "}
         describe what each plan will include — they&apos;re part of the real plan definition, not a
@@ -61,10 +61,10 @@ export default async function PricingPage() {
           {billingEnabled ? (
             <>
               Registering always creates a Free account. Upgrading redirects you to Stripe&apos;s
-              secure checkout — Veriqen never sees or stores your card details. Clicking &quot;Back
-              to Veriqen&quot; or landing back on this site doesn&apos;t change your plan by itself;
-              your account only updates once Stripe confirms the subscription, which is usually
-              immediate.
+              secure checkout — Veriqen News never sees or stores your card details. Clicking
+              &quot;Back to Veriqen News&quot; or landing back on this site doesn&apos;t change your
+              plan by itself; your account only updates once Stripe confirms the subscription, which
+              is usually immediate.
             </>
           ) : (
             <>

@@ -20,7 +20,7 @@ function baseCoverage(overrides: Partial<CoverageComparisonView> = {}): Coverage
     claimGroups: [],
     totalClaimGroupCount: 0,
     headlineComparison: null,
-    limitationsNote: "Comparisons are based on the article text available to Veriqen.",
+    limitationsNote: "Comparisons are based on the article text available to Veriqen News.",
     ...overrides,
   };
 }

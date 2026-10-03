@@ -21,7 +21,7 @@ import { ClaimEvidenceDrawer } from "@/components/story/ClaimEvidenceDrawer";
  * which only ever receives this same safe view model — never a raw Claim,
  * ClaimGroup, or ProvenanceObservation-shaped object.
  *
- * Core principle this component must never violate: Veriqen describes
+ * Core principle this component must never violate: Veriqen News describes
  * observable differences in reporting — it does not infer motive, does
  * not treat repetition as corroboration, and does not treat "not detected
  * in the available text" as "omitted."
@@ -71,7 +71,7 @@ export function CoverageComparison({ comparison }: { comparison: CoverageCompari
 
       {!hasAnyContent && (
         <p className="mb-3 text-sm text-foreground-muted">
-          Veriqen did not detect comparable assertions in the available text for this story.
+          Veriqen News did not detect comparable assertions in the available text for this story.
         </p>
       )}
 
@@ -167,10 +167,10 @@ export function CoverageComparison({ comparison }: { comparison: CoverageCompari
 function MethodologyDisclosure() {
   return (
     <details className="mt-3 rounded-xl border border-border p-4 text-sm">
-      <summary className="cursor-pointer font-semibold">How Veriqen compares coverage</summary>
+      <summary className="cursor-pointer font-semibold">How Veriqen News compares coverage</summary>
       <div className="mt-3 space-y-2 text-foreground-muted">
         <p>
-          Veriqen looks for two kinds of explicit, structured assertions in the article text
+          Veriqen News looks for two kinds of explicit, structured assertions in the article text
           available to it: numbers tied to a recognized category (like a count of people injured, a
           dollar amount, or a percentage), and statements attributed to a named or role-based
           source. Similar assertions found across multiple articles in this story are grouped
@@ -191,7 +191,8 @@ function MethodologyDisclosure() {
             it was attributed.
           </li>
           <li>
-            Veriqen does not assess whether any claim, outlet, or headline is accurate or biased.
+            Veriqen News does not assess whether any claim, outlet, or headline is accurate or
+            biased.
           </li>
         </ul>
       </div>

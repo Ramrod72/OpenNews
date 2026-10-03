@@ -228,8 +228,8 @@ export function SourceProfileManager({ source }: { source: SourceWithAssessments
       <div className="rounded-xl border border-border p-4">
         <h2 className="mb-1 font-bold">External assessments</h2>
         <p className="mb-4 text-sm text-foreground-muted">
-          Each assessment must name the organization that made it. Veriqen never invents or averages
-          ratings — enter exactly what the named provider published.
+          Each assessment must name the organization that made it. Veriqen News never invents or
+          averages ratings — enter exactly what the named provider published.
         </p>
 
         <ul className="mb-4 flex flex-col gap-3">

@@ -12,7 +12,7 @@ import { EvidenceDrawer } from "@/components/story/EvidenceDrawer";
  * receives the same safe view-model data this component already has —
  * never the raw ClusterOriginSummary.
  *
- * Core principle this component must never violate: Veriqen traces
+ * Core principle this component must never violate: Veriqen News traces
  * attribution, it does not determine truth. Nothing here may say a
  * source "verified," "confirmed," or "proved" anything, and shared
  * attribution to one entity is never described as independent
@@ -59,7 +59,7 @@ export function StoryIntelligence({ intelligence }: { intelligence: StoryIntelli
       "Only one article is currently linked to this story — sourcing comparisons need more than one.";
   } else if (detectedNothingAtAll) {
     emptyStateMessage =
-      "Veriqen did not detect explicit sourcing language in the available article text for this story.";
+      "Veriqen News did not detect explicit sourcing language in the available article text for this story.";
   } else if (totalReportingSourceGroupCount === 0) {
     emptyStateMessage = "No two articles in this story cite the same identifiable source yet.";
   }
@@ -99,8 +99,8 @@ export function StoryIntelligence({ intelligence }: { intelligence: StoryIntelli
 
       {originalReporting && (
         <p className="mb-3 text-sm text-foreground-muted">
-          Veriqen detected language associated with original reporting in {originalReporting.count}{" "}
-          article{originalReporting.count === 1 ? "" : "s"}.
+          Veriqen News detected language associated with original reporting in{" "}
+          {originalReporting.count} article{originalReporting.count === 1 ? "" : "s"}.
         </p>
       )}
 
@@ -109,8 +109,8 @@ export function StoryIntelligence({ intelligence }: { intelligence: StoryIntelli
           Sourcing not detected in {sourcingNotDetectedCount} article
           {sourcingNotDetectedCount === 1 ? "" : "s"}.{" "}
           <span className="text-xs">
-            (Veriqen did not detect explicit sourcing language in the available article text — this
-            does not mean the article has no sources.)
+            (Veriqen News did not detect explicit sourcing language in the available article text —
+            this does not mean the article has no sources.)
           </span>
         </p>
       )}
@@ -138,10 +138,10 @@ export function StoryIntelligence({ intelligence }: { intelligence: StoryIntelli
 function HowVeriqenTraces() {
   return (
     <details className="mt-5 rounded-xl border border-border p-4 text-sm">
-      <summary className="cursor-pointer font-semibold">How Veriqen traces this</summary>
+      <summary className="cursor-pointer font-semibold">How Veriqen News traces this</summary>
       <div className="mt-3 space-y-2 text-foreground-muted">
         <p>
-          Veriqen analyzes the article text available from publishers and looks for explicit
+          Veriqen News analyzes the article text available from publishers and looks for explicit
           sourcing language, such as references to reporting organizations, agencies, statements,
           and other identifiable sources. Articles that cite the same identified source can then be
           grouped together.
@@ -155,7 +155,8 @@ function HowVeriqenTraces() {
           </li>
           <li>No detected sourcing does not mean an article has no sources.</li>
           <li>
-            Veriqen traces attribution — it does not determine whether a claim is true or false.
+            Veriqen News traces attribution — it does not determine whether a claim is true or
+            false.
           </li>
         </ul>
       </div>

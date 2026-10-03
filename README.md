@@ -1,6 +1,6 @@
-# Veriqen
+# Veriqen News
 
-An open-source, self-hostable news aggregator. Veriqen pulls headlines from
+An open-source, self-hostable news aggregator. Veriqen News pulls headlines from
 public RSS/Atom feeds, groups articles covering the same event into a single
 **story**, and gives readers a timeline, source comparison, and links back to
 every original publisher — instead of one more undifferentiated chronological
@@ -22,7 +22,7 @@ search API, no AI API, no hosted database, no analytics platform. A clone and
   window — never a fabricated label.
 - **Builds a timeline and source comparison** for every story, so you can see
   how coverage developed and how different outlets are framing it, without
-  Veriqen telling you which one is "right."
+  Veriqen News telling you which one is "right."
 - **Summarizes stories automatically** from the collected excerpts
   (extractive, no AI required), with an optional pluggable AI provider
   (self-hosted Ollama-compatible endpoint) for higher-quality summaries.
