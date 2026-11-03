@@ -24,29 +24,38 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Download ImageMagick 7 portable (Q16, x64)
+      - name: Download ImageMagick 7 portable (Q16, x64) from official GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $base = "https://imagemagick.org/archive/binaries/"
-          $html = (Invoke-WebRequest -UseBasicParsing $base).Content
-          $names = [regex]::Matches($html, 'ImageMagick-(7\.\d+\.\d+)-(\d+)-portable-Q16-x64\.zip') |
-            ForEach-Object { [pscustomobject]@{ Name = $_.Value; Ver = [version]("$($_.Groups[1].Value).$($_.Groups[2].Value)") } } |
-            Sort-Object Ver -Unique
-          if (-not $names) { throw "No ImageMagick 7 portable build found at $base" }
-          $file = ($names | Select-Object -Last 1).Name
-          Write-Host "Using $file"
-          Invoke-WebRequest -UseBasicParsing "$base$file" -OutFile "$env:RUNNER_TEMP\im.zip"
+          # Official distribution: release assets of github.com/ImageMagick/ImageMagick.
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
+          $releases = Invoke-RestMethod -Headers $headers "https://api.github.com/repos/ImageMagick/ImageMagick/releases?per_page=15"
+          $asset = $null
+          foreach ($r in $releases | Where-Object { -not $_.draft -and -not $_.prerelease -and $_.tag_name -like "7.*" }) {
+            $asset = $r.assets | Where-Object { $_.name -match '-portable-Q16-x64\.(zip|7z)$' } | Select-Object -First 1
+            if ($asset) { Write-Host "Release $($r.tag_name): $($asset.name)"; break }
+            Write-Host "Release $($r.tag_name) has no portable Q16 x64 asset; assets: $(($r.assets.name) -join ', ')"
+          }
+          if (-not $asset) { throw "No ImageMagick 7 portable Q16 x64 asset found in recent releases." }
 
-          # Verify against ImageMagick's published SHA-256 digests.
-          $rdf = (Invoke-WebRequest -UseBasicParsing "${base}digest.rdf").Content
-          $m = [regex]::Match($rdf, [regex]::Escape($file) + '"[\s\S]*?<digest:sha256>([0-9a-fA-F]{64})</digest:sha256>')
-          if (-not $m.Success) { throw "No published SHA-256 for $file" }
-          $actual = (Get-FileHash "$env:RUNNER_TEMP\im.zip" -Algorithm SHA256).Hash
-          if ($actual -ne $m.Groups[1].Value.ToUpper()) { throw "SHA-256 mismatch for $file" }
+          # SHA-256 computed by GitHub for the uploaded asset.
+          if ($asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') { throw "No SHA-256 digest published for $($asset.name)" }
+          $expected = $Matches[1].ToUpper()
+          $archive = Join-Path $env:RUNNER_TEMP $asset.name
+          Invoke-WebRequest -UseBasicParsing $asset.browser_download_url -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw "SHA-256 mismatch for $($asset.name): expected $expected, got $actual" }
           Write-Host "SHA-256 verified: $actual"
 
-          Expand-Archive "$env:RUNNER_TEMP\im.zip" "$env:RUNNER_TEMP\im"
-          $exe = Get-ChildItem "$env:RUNNER_TEMP\im" -Recurse -Filter magick.exe | Select-Object -First 1
+          $dest = Join-Path $env:RUNNER_TEMP "im"
+          7z x $archive "-o$dest" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Extraction failed" }
+          $exe = Get-ChildItem $dest -Recurse -Filter magick.exe | Select-Object -First 1
+          if (-not $exe) { throw "magick.exe not found in $($asset.name)" }
+          Write-Host "ImageMagick folder: $($exe.DirectoryName)"
+          Get-ChildItem $exe.DirectoryName -Filter *.txt | ForEach-Object { Write-Host "  $($_.Name)" }
           "IM_DIR=$($exe.DirectoryName)" | Out-File -Append $env:GITHUB_ENV
 
       - name: Test and build

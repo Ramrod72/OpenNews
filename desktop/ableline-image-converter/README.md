@@ -36,7 +36,9 @@ No accounts, telemetry, network access or updates. Everything runs locally.
 Every push that changes this folder runs the GitHub Actions workflow
 **Ableline Image Converter (Windows build)** (`.github/workflows/ableline-windows.yml`). It:
 
-1. downloads the latest ImageMagick 7 portable Q16 x64 build and checks its published SHA-256,
+1. downloads the latest ImageMagick 7 portable Q16 x64 build from the official
+   [ImageMagick GitHub Releases](https://github.com/ImageMagick/ImageMagick/releases)
+   and verifies it against the SHA-256 digest GitHub publishes for the asset,
 2. runs the full test suite on Windows against that ImageMagick,
 3. builds the app with PyInstaller and checks that the `.exe` starts,
 4. uploads **AblelineImageConverter-windows-x64** as a downloadable artifact.
@@ -74,8 +76,9 @@ isn't installed.
 
 ## Build the Windows executable locally
 
-1. Download the **portable** ImageMagick 7 build (`ImageMagick-7.x.x-portable-Q16-x64.zip`)
-   from <https://imagemagick.org/script/download.php#windows> and extract it.
+1. Download the **portable** ImageMagick 7 build (`ImageMagick-7.x.x-portable-Q16-x64`)
+   from the official [ImageMagick GitHub Releases](https://github.com/ImageMagick/ImageMagick/releases),
+   check its SHA-256 (shown next to the asset), and extract it.
 2. Run:
 
 ```powershell
