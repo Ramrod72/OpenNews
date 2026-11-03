@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Restrictive ImageMagick security policy for Ableline Image Converter.
+
+  - Only the PNG, JPEG, WebP, BMP and TIFF coders may read or write.
+  - All external delegates (Ghostscript, ffmpeg, curl, ...) are disabled.
+  - Filters/modules from untrusted sources and indirect reads (@file) are disabled.
+  - Resource limits bound memory, disk, pixel dimensions, threads and time.
+
+  The packaging script copies this file over the policy.xml shipped with
+  the bundled ImageMagick binaries so it is always the effective policy.
+-->
+<policymap>
+  <!-- Resource limits -->
+  <policy domain="resource" name="memory" value="1GiB"/>
+  <policy domain="resource" name="map" value="2GiB"/>
+  <policy domain="resource" name="disk" value="4GiB"/>
+  <policy domain="resource" name="area" value="256MP"/>
+  <policy domain="resource" name="width" value="16KP"/>
+  <policy domain="resource" name="height" value="16KP"/>
+  <policy domain="resource" name="list-length" value="64"/>
+  <policy domain="resource" name="file" value="256"/>
+  <policy domain="resource" name="thread" value="4"/>
+  <policy domain="resource" name="time" value="300"/>
+
+  <!-- No external programs -->
+  <policy domain="delegate" rights="none" pattern="*"/>
+
+  <!-- No embedded filters (MagickCore image filters / plugins) -->
+  <policy domain="filter" rights="none" pattern="*"/>
+
+  <!-- No indirect reads (e.g. @filelist.txt) -->
+  <policy domain="path" rights="none" pattern="@*"/>
+
+  <!-- Deny every coder, then allow only the supported formats -->
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read|write" pattern="{PNG,PNG8,PNG24,PNG32,PNG48,PNG64,PNG00,JPEG,JPG,JPE,WEBP,BMP,BMP2,BMP3,DIB,TIFF,TIF,TIFF64}"/>
+</policymap>

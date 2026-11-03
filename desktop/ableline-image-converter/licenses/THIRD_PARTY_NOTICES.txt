@@ -1,0 +1,37 @@
+Ableline Image Converter - Third-Party Notices
+==============================================
+
+Ableline Image Converter is an independent product. It is not affiliated
+with, endorsed by, or sponsored by ImageMagick Studio LLC or The Qt Company.
+
+1. ImageMagick
+   Copyright (C) 1999 ImageMagick Studio LLC
+   https://imagemagick.org
+   Licensed under the ImageMagick License - see ImageMagick-LICENSE.txt.
+   ImageMagick is a trademark of ImageMagick Studio LLC.
+   Distributed unmodified as separate executables and libraries in the
+   "imagemagick" folder of this application; only its configuration file
+   policy.xml is replaced with a more restrictive security policy.
+   The ImageMagick Windows binaries include third-party libraries (libpng,
+   libjpeg-turbo, libwebp, libtiff, zlib and others) whose notices are in
+   ImageMagick-NOTICE.txt when present in this folder.
+
+2. Qt for Python (PySide6) and Qt 6
+   Copyright (C) The Qt Company Ltd. and other contributors
+   https://www.qt.io/qt-for-python
+   Used under the GNU Lesser General Public License v3 - see LGPL-3.0.txt
+   (which incorporates GPL-3.0.txt). The Qt/PySide6 libraries are shipped
+   as separate, replaceable shared libraries (DLL/.pyd files) in this
+   application's folder; you may replace them with your own compatible
+   builds. Source code for Qt and PySide6 is available from
+   https://download.qt.io/official_releases/ and
+   https://code.qt.io/cgit/pyside/pyside-setup.git/.
+
+3. Python
+   Copyright (C) Python Software Foundation
+   Licensed under the PSF License Agreement, https://docs.python.org/3/license.html
+
+4. PyInstaller bootloader
+   Licensed under the GPL v2 with a special exception permitting
+   distribution of bundled applications under any license.
+   https://pyinstaller.org

@@ -1,0 +1,69 @@
+name: Ableline Image Converter (Windows build)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "desktop/ableline-image-converter/**"
+      - ".github/workflows/ableline-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop/ableline-image-converter
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download ImageMagick 7 portable (Q16, x64)
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = "https://imagemagick.org/archive/binaries/"
+          $html = (Invoke-WebRequest -UseBasicParsing $base).Content
+          $names = [regex]::Matches($html, 'ImageMagick-(7\.\d+\.\d+)-(\d+)-portable-Q16-x64\.zip') |
+            ForEach-Object { [pscustomobject]@{ Name = $_.Value; Ver = [version]("$($_.Groups[1].Value).$($_.Groups[2].Value)") } } |
+            Sort-Object Ver -Unique
+          if (-not $names) { throw "No ImageMagick 7 portable build found at $base" }
+          $file = ($names | Select-Object -Last 1).Name
+          Write-Host "Using $file"
+          Invoke-WebRequest -UseBasicParsing "$base$file" -OutFile "$env:RUNNER_TEMP\im.zip"
+
+          # Verify against ImageMagick's published SHA-256 digests.
+          $rdf = (Invoke-WebRequest -UseBasicParsing "${base}digest.rdf").Content
+          $m = [regex]::Match($rdf, [regex]::Escape($file) + '"[\s\S]*?<digest:sha256>([0-9a-fA-F]{64})</digest:sha256>')
+          if (-not $m.Success) { throw "No published SHA-256 for $file" }
+          $actual = (Get-FileHash "$env:RUNNER_TEMP\im.zip" -Algorithm SHA256).Hash
+          if ($actual -ne $m.Groups[1].Value.ToUpper()) { throw "SHA-256 mismatch for $file" }
+          Write-Host "SHA-256 verified: $actual"
+
+          Expand-Archive "$env:RUNNER_TEMP\im.zip" "$env:RUNNER_TEMP\im"
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\im" -Recurse -Filter magick.exe | Select-Object -First 1
+          "IM_DIR=$($exe.DirectoryName)" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Test and build
+        run: ./packaging/build_windows.ps1 -ImageMagickDir $env:IM_DIR
+
+      - name: Smoke test the executable
+        run: |
+          $exe = "dist\AblelineImageConverter\AblelineImageConverter.exe"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "Executable exited early with code $($p.ExitCode)" }
+          Stop-Process $p.Id
+          Write-Host "Executable started and stayed running."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AblelineImageConverter-windows-x64
+          path: desktop/ableline-image-converter/dist/AblelineImageConverter
+          if-no-files-found: error

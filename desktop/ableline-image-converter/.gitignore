@@ -1,0 +1,9 @@
+# Local ImageMagick binaries for bundling (see README) - not committed
+/vendor/
+# Build output
+/build/
+/dist/
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
