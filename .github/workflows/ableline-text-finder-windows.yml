@@ -1,0 +1,77 @@
+name: Ableline Text Finder (Windows build)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "desktop/ableline-text-finder/**"
+      - ".github/workflows/ableline-text-finder-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop/ableline-text-finder
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Installs deps, downloads + SHA-256-verifies pinned ripgrep, runs tests,
+      # builds with PyInstaller and creates the distribution zip.
+      - name: Download ripgrep, test and build
+        run: ./packaging/build_windows.ps1
+
+      - name: Remove any system ripgrep from PATH
+        run: |
+          $clean = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'rg.exe')) }) -join ';'
+          "PATH=$clean" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Smoke test the packaged executable
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Get-Command rg -ErrorAction SilentlyContinue) { throw "rg is still on PATH" }
+          Write-Host "No system-wide ripgrep on PATH."
+          $exe = Resolve-Path "dist\AblelineTextFinder\AblelineTextFinder.exe"
+          & "dist\AblelineTextFinder\_internal\ripgrep\rg.exe" --version
+
+          # 1. Self-test: real search through the bundled rg.exe
+          $report = Join-Path $env:RUNNER_TEMP "selftest.json"
+          $p = Start-Process $exe -ArgumentList @("--self-test", "`"$report`"") -Wait -PassThru
+          Get-Content $report -Encoding utf8
+          $r = Get-Content $report -Raw -Encoding utf8 | ConvertFrom-Json
+          if ($p.ExitCode -ne 0 -or -not $r.ok -or -not $r.rg_is_bundled -or -not $r.frozen) {
+            throw "Self-test failed (exit $($p.ExitCode))"
+          }
+          Write-Host "Self-test passed using bundled $($r.rg_path)"
+
+          # 2. GUI starts and stays running
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $g = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($g.HasExited) { throw "Executable exited early with code $($g.ExitCode)" }
+          Stop-Process $g.Id
+          Write-Host "GUI started and stayed running."
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AblelineTextFinder-test-results
+          path: |
+            desktop/ableline-text-finder/dist/test-results.txt
+            desktop/ableline-text-finder/dist/test-results.xml
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AblelineTextFinder-windows-x64
+          path: desktop/ableline-text-finder/dist/AblelineTextFinder
+          if-no-files-found: error

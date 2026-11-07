@@ -1,0 +1,89 @@
+Ableline Text Finder - Third-Party Notices
+==========================================
+
+Ableline Text Finder is an independently developed graphical interface
+powered by ripgrep. Ableline did not create ripgrep and is not affiliated
+with, endorsed by, or sponsored by the ripgrep project, its author Andrew
+Gallant, or The Qt Company.
+
+1. ripgrep 15.1.0 (bundled as _internal\ripgrep\rg.exe, unmodified)
+   Copyright (c) 2015 Andrew Gallant
+   https://github.com/BurntSushi/ripgrep
+   Dual-licensed under the MIT License and the Unlicense (ripgrep-COPYING.txt).
+   Redistributed under the MIT License - see ripgrep-LICENSE-MIT.txt.
+   The Unlicense text is in ripgrep-UNLICENSE.txt.
+   Official binary: ripgrep-15.1.0-x86_64-pc-windows-msvc.zip from the
+   project's GitHub Releases, SHA-256
+   124510b94b6baa3380d051fdf4650eaa80a302c876d611e9dba0b2e18d87493a
+   (see ripgrep-VERSION.txt).
+
+2. Libraries compiled into the ripgrep binary
+
+   a. PCRE2 10.46 - BSD-3-Clause WITH PCRE2-exception
+      Copyright (c) 1997-2007 University of Cambridge
+      Copyright (c) 2007-2024 Philip Hazel
+      Copyright (c) 2009-2024 Zoltan Herczeg (JIT / stack-less JIT compiler)
+      See PCRE2-LICENCE.md.
+
+   b. Rust crates, each licensed under MIT and/or Apache-2.0 and/or the
+      Unlicense (used here under the MIT License or Apache License 2.0;
+      MIT text below, Apache text in Apache-2.0.txt):
+        aho-corasick, memchr, walkdir, termcolor, winapi-util,
+        grep-* / globset / ignore (part of ripgrep)  - Copyright (c) Andrew Gallant
+        regex-automata, regex-syntax                 - Copyright (c) The Rust Project Developers
+        bstr                                         - Copyright (c) Andrew Gallant
+        pcre2, pcre2-sys                             - Copyright (c) Andrew Gallant
+        encoding_rs, encoding_rs_io                  - Copyright (c) Mozilla Foundation / Andrew Gallant
+          encoding_rs includes data derived from the WHATWG Encoding
+          Standard, licensed under BSD-3-Clause - see
+          encoding_rs-LICENSE-WHATWG.txt.
+        anyhow                                       - Copyright (c) David Tolnay
+        crossbeam-*                                  - Copyright (c) The Crossbeam Project Developers
+        lexopt                                       - Copyright (c) Jan Verbeek
+        memmap2                                      - Copyright (c) Dan Burkert, Yevhenii Reizner
+        textwrap                                     - Copyright (c) Martin Geisler
+        Rust standard library                        - Copyright (c) The Rust Project Developers
+
+      MIT License:
+        Permission is hereby granted, free of charge, to any person
+        obtaining a copy of this software and associated documentation
+        files (the "Software"), to deal in the Software without
+        restriction, including without limitation the rights to use, copy,
+        modify, merge, publish, distribute, sublicense, and/or sell copies
+        of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be
+        included in all copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+        EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+        MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+        NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+        BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+        ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+        CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+
+3. Qt for Python (PySide6) and Qt 6
+   Copyright (C) The Qt Company Ltd. and other contributors
+   https://www.qt.io/qt-for-python
+   Used under the GNU Lesser General Public License v3 - see LGPL-3.0.txt
+   (which incorporates GPL-3.0.txt). The Qt/PySide6 libraries are shipped
+   unmodified as separate, replaceable shared libraries (DLL/.pyd files) in
+   the _internal folder; you may replace them with your own compatible
+   builds. Source code for Qt and PySide6 is available from
+   https://download.qt.io/official_releases/ and
+   https://code.qt.io/cgit/pyside/pyside-setup.git/. Qt and its bundled
+   third-party components (e.g. HarfBuzz, FreeType, libpng, zlib, PCRE2,
+   double-conversion) carry their own permissive notices, listed at
+   https://doc.qt.io/qt-6/licenses-used-in-qt.html.
+
+4. Python 3.12
+   Copyright (C) 2001 Python Software Foundation
+   Licensed under the PSF License Agreement, https://docs.python.org/3/license.html
+
+5. PyInstaller bootloader
+   Licensed under the GPL v2 with a special exception permitting
+   distribution of bundled applications under any license.
+   https://pyinstaller.org

@@ -1,0 +1,19 @@
+[project]
+name = "ableline-text-finder"
+version = "1.0.0"
+description = "Offline Windows text search tool - a graphical interface powered by ripgrep"
+requires-python = ">=3.12"
+dependencies = ["PySide6-Essentials>=6.7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4.4", "pyinstaller>=6.10"]
+
+[project.gui-scripts]
+ableline-text-finder = "textfinder.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
